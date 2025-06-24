@@ -1046,7 +1046,7 @@ dependencies = [
 
 [[package]]
 name = "bondinary-auth-lib"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "asn1",
  "async-graphql",
