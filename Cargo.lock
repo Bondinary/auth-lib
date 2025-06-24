@@ -1092,6 +1092,7 @@ dependencies = [
 [[package]]
 name = "bondinary-common-lib"
 version = "0.1.0"
+source = "git+https://github.com/Bondinary/bondinary-common-lib.git?tag=v0.1.0#5afac80d4871e435a77fee8ecf37f852dc83e53e"
 dependencies = [
  "asn1",
  "async-graphql",

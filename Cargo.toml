@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bondinary-common-lib = { path = "../bondinary-common-lib" }
+bondinary-common-lib = { git = "https://github.com/Bondinary/bondinary-common-lib.git", tag = "v0.1.0" }
 
 urlencoding = "2.1.3"
 phonenumber = "0.3.7"
