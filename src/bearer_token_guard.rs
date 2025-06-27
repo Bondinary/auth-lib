@@ -27,6 +27,8 @@ pub struct GuardUser {
     pub user_id: String,
     pub roles: Vec<String>,
     pub country_code: String,
+    pub firebase_user_id: String,
+    pub phone_number: String,
 }
 
 #[derive(Debug, Clone)]
@@ -266,6 +268,9 @@ impl<'r> FromRequest<'r> for GuardUser {
                 user_id: user_service_auth_data.user_id, // Use ID from User Service
                 roles: user_service_auth_data.roles, // Use roles from User Service
                 country_code: country_code_alpha2,
+                firebase_user_id,
+                phone_number: phone_number_str,
+
             })
         } else {
             let status = user_service_response_raw.status();
