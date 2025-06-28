@@ -20,15 +20,15 @@ pub struct BearerToken(pub String);
 
 // Assume this is passed as Rocket State or directly obtained by guard
 #[derive(Debug, Clone)]
-pub struct UserServiceUrl(pub String);
+pub struct UsersServiceUrl(pub String);
 
 #[derive(Debug, Clone)]
 pub struct GuardUser {
     pub user_id: String,
     pub roles: Vec<String>,
     pub country_code: String,
-    pub firebase_user_id: String,
-    pub phone_number: String,
+    pub firebase_user_id: Option<String>,
+    pub phone_number: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -195,14 +195,14 @@ impl<'r> FromRequest<'r> for GuardUser {
             }
         };
 
-        // Get the UserServiceUrl from Rocket's managed state
-        let user_service_url_guard = request.guard::<&rocket::State<UserServiceUrl>>().await;
+        // Get the UsersServiceUrl from Rocket's managed state
+        let user_service_url_guard = request.guard::<&rocket::State<UsersServiceUrl>>().await;
         let user_service_url = match user_service_url_guard {
             Outcome::Success(url) => &url.0,
             _ => {
                 // Outcome::Failure or Outcome::Forward
                 error!(
-                    "UserServiceUrl not found in Rocket state for auth guard. Service not properly initialized."
+                    "UsersServiceUrl not found in Rocket state for auth guard. Service not properly initialized."
                 );
                 return Outcome::Error((
                     Status::InternalServerError,
@@ -268,8 +268,8 @@ impl<'r> FromRequest<'r> for GuardUser {
                 user_id: user_service_auth_data.user_id, // Use ID from User Service
                 roles: user_service_auth_data.roles, // Use roles from User Service
                 country_code: country_code_alpha2,
-                firebase_user_id,
-                phone_number: phone_number_str,
+                firebase_user_id: Some(firebase_user_id),
+                phone_number: Some(phone_number_str),
 
             })
         } else {
