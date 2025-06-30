@@ -6,7 +6,7 @@ use jsonwebtoken::{
 use once_cell::sync::Lazy;
 use openssl::error::ErrorStack;
 use openssl::x509::X509;
-use reqwest::{self, Client};
+use reqwest::{self, Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::error::Error;
@@ -18,7 +18,9 @@ use std::{
     collections::{HashMap, HashSet},
     time::SystemTime,
 };
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
+
+use crate::bearer_token_guard::GuardUser;
 
 static KEYS: Lazy<Mutex<HashMap<String, Vec<u8>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -217,6 +219,28 @@ impl AuthHelper {
             .to_string();
 
         Ok(id_token)
+    }
+
+    pub fn add_auth_headers(
+        mut request_builder: RequestBuilder,
+        guard_user: &GuardUser, // Take GuardUser by reference
+        internal_api_key: &str, // Take internal API key by reference
+    ) -> RequestBuilder {
+        request_builder = request_builder.header("X-Internal-API-Key", internal_api_key);
+    
+        if let Some(firebase_user_id) = &guard_user.firebase_user_id {
+            request_builder = request_builder.header("X-Firebase-UID", firebase_user_id);
+        } else {
+            warn!("add_auth_headers: X-Firebase-UID not available in GuardUser.");
+        }
+    
+        if let Some(phone_number) = &guard_user.phone_number {
+            request_builder = request_builder.header("X-Phone-Number", phone_number);
+        } else {
+            warn!("add_auth_headers: X-Phone-Number not available in GuardUser.");
+        }
+    
+        request_builder
     }
 }
 
