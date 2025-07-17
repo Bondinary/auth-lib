@@ -1,4 +1,4 @@
-use bondinary_common_lib::error::ApiError;
+use common_lib::error::ApiError;
 use phonenumber::{ ParseError, PhoneNumber };
 use rocket::http::Status;
 use rocket::request::{ FromRequest, Outcome, Request };
@@ -29,6 +29,13 @@ pub struct GuardUser {
     pub country_code: String,
     pub firebase_user_id: Option<String>,
     pub phone_number: Option<String>,
+    pub current_client_id: Option<String>,
+    pub current_venue_id: Option<String>,
+    pub major_id: Option<String>,
+    pub area_of_interest_ids: Option<Vec<String>>,
+    pub default_language: Option<String>,
+    pub current_venue_type: Option<String>,
+    pub industry_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +48,13 @@ pub struct GuardNewUser {
 pub struct UserServiceAuthResponse {
     pub user_id: String,
     pub roles: Vec<String>, // Assuming roles are strings from User Service
+    pub current_client_id: Option<String>,
+    pub current_venue_id: Option<String>,
+    pub major_id: Option<String>,
+    pub area_of_interest_ids: Option<Vec<String>>,
+    pub default_language: Option<String>,
+    pub current_venue_type: Option<String>,
+    pub industry_ids: Option<Vec<String>>,
     // Add any other fields the User Service might return here, e.g.,
     // pub is_active: bool,
 }
@@ -270,7 +284,13 @@ impl<'r> FromRequest<'r> for GuardUser {
                 country_code: country_code_alpha2,
                 firebase_user_id: Some(firebase_user_id),
                 phone_number: Some(phone_number_str),
-
+                current_client_id: user_service_auth_data.current_client_id,
+                current_venue_id: user_service_auth_data.current_venue_id,
+                major_id: user_service_auth_data.major_id,
+                area_of_interest_ids: user_service_auth_data.area_of_interest_ids,
+                default_language: user_service_auth_data.default_language,
+                current_venue_type: user_service_auth_data.current_venue_type,
+                industry_ids: user_service_auth_data.industry_ids,
             })
         } else {
             let status = user_service_response_raw.status();

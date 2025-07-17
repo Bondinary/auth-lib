@@ -1,9 +1,9 @@
-use bondinary_common_lib::constants::{
+use common_lib::constants::{
     FIREBASE_PROJECT_ID,
     GOOGLE_API_KEYS_URL,
     LOCAL_FIREBASE_ACCOUNT_SERVICE_JSON_PATH,
 };
-use bondinary_common_lib::utils::get_env_var;
+use common_lib::utils::get_env_var;
 use jsonwebtoken::{
     decode,
     decode_header,

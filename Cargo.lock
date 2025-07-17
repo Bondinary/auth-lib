@@ -109,6 +109,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "auth-lib"
+version = "0.1.3"
+dependencies = [
+ "common-lib",
+ "jsonwebtoken",
+ "once_cell",
+ "openssl",
+ "phonenumber",
+ "reqwest",
+ "rocket",
+ "rocket_okapi",
+ "serde",
+ "serde_json",
+ "tracing",
+ "urlencoding",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -616,46 +634,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bondinary-auth-lib"
-version = "0.1.3"
-dependencies = [
- "bondinary-common-lib",
- "jsonwebtoken",
- "once_cell",
- "openssl",
- "phonenumber",
- "reqwest",
- "rocket",
- "rocket_okapi",
- "serde",
- "serde_json",
- "tracing",
- "urlencoding",
-]
-
-[[package]]
-name = "bondinary-common-lib"
-version = "0.1.3"
-dependencies = [
- "aws-config",
- "aws-sdk-secretsmanager",
- "chrono",
- "hex",
- "mongodb",
- "rand 0.8.5",
- "rocket",
- "rocket_okapi",
- "rusoto_core",
- "rusoto_s3",
- "rustls 0.23.28",
- "schemars 1.0.3",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "bson"
 version = "2.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -765,6 +743,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7caa3f9de89ddbe2c607f4101924c5abec803763ae9534e4f4d7d8f84aa81f0"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "common-lib"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-secretsmanager",
+ "chrono",
+ "hex",
+ "mongodb",
+ "rand 0.8.5",
+ "rocket",
+ "rocket_okapi",
+ "rusoto_core",
+ "rusoto_s3",
+ "rustls 0.23.28",
+ "schemars 1.0.3",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

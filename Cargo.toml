@@ -1,10 +1,10 @@
 [package]
-name = "bondinary-auth-lib"
+name = "auth-lib"
 version = "0.1.3"
 edition = "2024"
 
 [dependencies]
-bondinary-common-lib = { path = "../bondinary-common-lib" }
+common-lib = { path = "../common-lib" }
 
 urlencoding = "2.1.3"
 phonenumber = "0.3.7"
