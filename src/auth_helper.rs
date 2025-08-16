@@ -32,11 +32,12 @@ use crate::bearer_token_guard::GuardUser;
 
 static KEYS: Lazy<Mutex<HashMap<String, Vec<u8>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
+#[derive(Default)]
 pub struct AuthHelper {}
 
 impl AuthHelper {
     pub fn new() -> Self {
-        AuthHelper {}
+        Self::default()
     }
 
     pub async fn fetch_firebase_keys(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -76,7 +77,7 @@ impl AuthHelper {
 
         let pem_bytes = keys.get(&kid).ok_or_else(|| {
             error!("No matching key found for kid: {}", kid);
-            Box::new(std::io::Error::new(NotFound, format!("No key found for kid {}", kid))) as Box<
+            Box::new(std::io::Error::new(NotFound, format!("No key found for kid {kid}"))) as Box<
                 dyn Error + Send + Sync
             >
         })?;
@@ -84,7 +85,7 @@ impl AuthHelper {
         let pub_key_pem = self.extract_public_key_from_certificate(pem_bytes).map_err(|e| {
             error!("Failed to extract public key for kid {}: {}", kid, e);
             Box::new(
-                std::io::Error::new(InvalidData, format!("Failed to extract public key: {}", e))
+                std::io::Error::new(InvalidData, format!("Failed to extract public key: {e}"))
             ) as Box<dyn Error + Send + Sync>
         })?;
 
@@ -94,7 +95,7 @@ impl AuthHelper {
             Box::new(
                 std::io::Error::new(
                     InvalidData,
-                    format!("Invalid PEM format for key ID {}: {}", kid, e)
+                    format!("Invalid PEM format for key ID {kid}: {e}")
                 )
             ) as Box<dyn Error + Send + Sync>
         })?;
@@ -103,10 +104,10 @@ impl AuthHelper {
         validation.validate_exp = true;
         let project_id = get_env_var(FIREBASE_PROJECT_ID, None)?;
         let stripped_id = project_id;
-        validation.set_audience(&[stripped_id.clone()]);
+        validation.set_audience(std::slice::from_ref(&stripped_id));
 
         let mut iss_set = HashSet::new();
-        iss_set.insert(format!("https://securetoken.google.com/{}", stripped_id));
+        iss_set.insert(format!("https://securetoken.google.com/{stripped_id}"));
         validation.iss = Some(iss_set.clone());
 
         debug!("JWT validation rules set with audience: {}", stripped_id);

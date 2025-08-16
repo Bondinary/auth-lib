@@ -165,10 +165,7 @@ impl<'r> FromRequest<'r> for GuardUser {
                 return Outcome::Error((
                     Status::BadRequest,
                     ApiError::BadRequest {
-                        message: format!(
-                            "Invalid phone number format propagated by gateway: {:?}",
-                            e
-                        ),
+                        message: format!("Invalid phone number format propagated by gateway: {e}"),
                     },
                 ));
             }
@@ -299,7 +296,7 @@ impl<'r> FromRequest<'r> for GuardUser {
             Outcome::Error((
                 Status::InternalServerError, // Treat User Service errors as internal issues
                 ApiError::InternalServerError {
-                    message: format!("User service returned an error: Status={}", status),
+                    message: format!("User service returned an error: Status={status}"),
                 },
             ))
         }
@@ -440,10 +437,7 @@ impl<'r> FromRequest<'r> for GuardNewUser {
                 return Outcome::Error((
                     Status::BadRequest,
                     ApiError::BadRequest {
-                        message: format!(
-                            "Invalid phone number format propagated by gateway: {:?}",
-                            e
-                        ),
+                        message: format!("Invalid phone number format propagated by gateway: {e}"),
                     },
                 ));
             }
