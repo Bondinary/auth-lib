@@ -1,3 +1,5 @@
+use crate::bearer_token_guard::GuardUser;
+
 #[derive(Debug, Clone)]
 pub struct SystemUserConfig {
     pub user_id: String,
@@ -26,6 +28,24 @@ impl SystemUserConfig {
         })
     }
 
+    /// Convert SystemUserConfig to GuardUser for service initialization
+    pub fn to_guard_user(&self) -> GuardUser {
+        GuardUser {
+            user_id: self.user_id.clone(),
+            roles: vec!["System".to_string()],
+            country_code: self.country_code.clone(),
+            firebase_user_id: Some(self.firebase_user_id.clone()),
+            phone_number: Some(self.phone_number.clone()),
+            current_client_id: None,
+            current_venue_id: None,
+            major_id: None,
+            area_of_interest_ids: None,
+            default_language: Some("EN".to_string()),
+            current_venue_type: None,
+            industry_ids: None,
+        }
+    }
+    
     fn generate_firebase_id(
         country_code: &str,
         service_name: &Option<String>
