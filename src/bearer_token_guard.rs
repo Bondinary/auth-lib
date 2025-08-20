@@ -563,3 +563,58 @@ impl<'a> OpenApiFromRequest<'a> for InternalApiKeyGuard {
         )
     }
 }
+
+#[derive(Debug, Clone)]
+pub enum FlexibleAuth {
+    User(GuardUser),
+    Internal,
+}
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for FlexibleAuth {
+    type Error = ApiError;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        // First try GuardUser authentication
+        match GuardUser::from_request(request).await {
+            Outcome::Success(guard_user) => {
+                debug!("FlexibleAuth: Authenticated as user: {}", guard_user.user_id);
+                return Outcome::Success(FlexibleAuth::User(guard_user));
+            }
+            Outcome::Error((_, _)) => {
+                debug!("FlexibleAuth: User auth failed, trying internal auth");
+                // Fall through to try internal auth
+            }
+            Outcome::Forward(_) => {
+                debug!("FlexibleAuth: User auth forwarded, trying internal auth");
+                // Fall through to try internal auth
+            }
+        }
+
+        // If user auth fails, try internal API key
+        match InternalApiKeyGuard::from_request(request).await {
+            Outcome::Success(_) => {
+                debug!("FlexibleAuth: Authenticated as internal service");
+                Outcome::Success(FlexibleAuth::Internal)
+            }
+            Outcome::Error((_, _)) => {
+                error!("FlexibleAuth: Both user and internal auth failed");
+                Outcome::Error((
+                    Status::Unauthorized,
+                    ApiError::Unauthorized {
+                        message: "Authentication required: provide either user token or internal API key".to_string(),
+                    },
+                ))
+            }
+            Outcome::Forward(_) => {
+                error!("FlexibleAuth: Both auth methods forwarded - no authentication possible");
+                Outcome::Error((
+                    Status::Unauthorized,
+                    ApiError::Unauthorized {
+                        message: "No valid authentication method found".to_string(),
+                    },
+                ))
+            }
+        }
+    }
+}
