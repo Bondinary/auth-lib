@@ -565,55 +565,121 @@ impl<'a> OpenApiFromRequest<'a> for InternalApiKeyGuard {
 }
 
 #[derive(Debug, Clone)]
-pub enum FlexibleAuth {
+pub enum GuardUserOrInternal {
     User(GuardUser),
-    Internal,
+    Internal(DummySystemUser),
+}
+
+#[derive(Debug, Clone)]
+pub struct DummySystemUser {
+    pub user_id: String,
+    pub roles: Vec<String>,
+}
+
+impl DummySystemUser {
+    pub fn new() -> Self {
+        Self {
+            user_id: "000000000000000000000000".to_string(),
+            roles: vec!["system".to_string()],
+        }
+    }
 }
 
 #[rocket::async_trait]
-impl<'r> FromRequest<'r> for FlexibleAuth {
+impl<'r> FromRequest<'r> for GuardUserOrInternal {
     type Error = ApiError;
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        // First try GuardUser authentication
-        match GuardUser::from_request(request).await {
-            Outcome::Success(guard_user) => {
-                debug!("FlexibleAuth: Authenticated as user: {}", guard_user.user_id);
-                return Outcome::Success(FlexibleAuth::User(guard_user));
+        debug!("GuardUserOrInternal: Checking authentication type");
+
+        // Check if this looks like a user request (has Firebase UID)
+        let has_firebase_uid = request.headers().get_one("X-Firebase-UID").is_some();
+        let has_phone_number = request.headers().get_one("X-Phone-Number").is_some();
+
+        if has_firebase_uid && has_phone_number {
+            // This looks like a user request, validate full user authentication
+            debug!("GuardUserOrInternal: Detected user request, validating full authentication");
+            
+            match GuardUser::from_request(request).await {
+                Outcome::Success(guard_user) => {
+                    debug!("GuardUserOrInternal: User authentication successful");
+                    Outcome::Success(GuardUserOrInternal::User(guard_user))
+                }
+                Outcome::Error((status, error)) => {
+                    debug!("GuardUserOrInternal: User authentication failed");
+                    Outcome::Error((status, error))
+                }
+                Outcome::Forward(forward) => Outcome::Forward(forward),
             }
-            Outcome::Error((_, _)) => {
-                debug!("FlexibleAuth: User auth failed, trying internal auth");
-                // Fall through to try internal auth
-            }
-            Outcome::Forward(_) => {
-                debug!("FlexibleAuth: User auth forwarded, trying internal auth");
-                // Fall through to try internal auth
+        } else {
+            // No user headers, check for internal API key only
+            debug!("GuardUserOrInternal: No user headers detected, checking internal API key");
+            
+            match InternalApiKeyGuard::from_request(request).await {
+                Outcome::Success(_) => {
+                    debug!("GuardUserOrInternal: Internal API key validation successful");
+                    Outcome::Success(GuardUserOrInternal::Internal(DummySystemUser::new()))
+                }
+                Outcome::Error((status, error)) => {
+                    debug!("GuardUserOrInternal: Internal API key validation failed");
+                    Outcome::Error((status, error))
+                }
+                Outcome::Forward(forward) => Outcome::Forward(forward),
             }
         }
+    }
+}
 
-        // If user auth fails, try internal API key
-        match InternalApiKeyGuard::from_request(request).await {
-            Outcome::Success(_) => {
-                debug!("FlexibleAuth: Authenticated as internal service");
-                Outcome::Success(FlexibleAuth::Internal)
-            }
-            Outcome::Error((_, _)) => {
-                error!("FlexibleAuth: Both user and internal auth failed");
-                Outcome::Error((
-                    Status::Unauthorized,
-                    ApiError::Unauthorized {
-                        message: "Authentication required: provide either user token or internal API key".to_string(),
-                    },
-                ))
-            }
-            Outcome::Forward(_) => {
-                error!("FlexibleAuth: Both auth methods forwarded - no authentication possible");
-                Outcome::Error((
-                    Status::Unauthorized,
-                    ApiError::Unauthorized {
-                        message: "No valid authentication method found".to_string(),
-                    },
-                ))
+impl GuardUserOrInternal {
+    /// Get user ID (works for both user and internal)
+    pub fn user_id(&self) -> &str {
+        match self {
+            GuardUserOrInternal::User(guard_user) => &guard_user.user_id,
+            GuardUserOrInternal::Internal(dummy_user) => &dummy_user.user_id,
+        }
+    }
+
+    /// Get country code (None for internal calls)
+    pub fn country_code(&self) -> Option<&str> {
+        match self {
+            GuardUserOrInternal::User(guard_user) => Some(&guard_user.country_code),
+            GuardUserOrInternal::Internal(_) => None,
+        }
+    }
+
+    /// Check if this is an internal call
+    pub fn is_internal(&self) -> bool {
+        matches!(self, GuardUserOrInternal::Internal(_))
+    }
+
+    /// Get GuardUser if this is a user call (for cases where you need full user context)
+    pub fn as_guard_user(&self) -> Option<&GuardUser> {
+        match self {
+            GuardUserOrInternal::User(guard_user) => Some(guard_user),
+            GuardUserOrInternal::Internal(_) => None,
+        }
+    }
+
+    /// Convert to a GuardUser for downstream calls (creates dummy user for internal)
+    pub fn to_guard_user_for_downstream(&self) -> GuardUser {
+        match self {
+            GuardUserOrInternal::User(guard_user) => guard_user.clone(),
+            GuardUserOrInternal::Internal(_) => {
+                // Create a minimal GuardUser for downstream service calls
+                GuardUser {
+                    user_id: "000000000000000000000000".to_string(),
+                    roles: vec![],
+                    country_code: "GLOBAL".to_string(), // Special marker
+                    firebase_user_id: None,
+                    phone_number: None,
+                    current_client_id: None,
+                    current_venue_id: None,
+                    major_id: None,
+                    area_of_interest_ids: None,
+                    default_language: None,
+                    current_venue_type: None,
+                    industry_ids: None,
+                }
             }
         }
     }
