@@ -1,3 +1,4 @@
+use common_lib::constants::INTERNAL_API_KEY;
 use common_lib::error::ApiError;
 use phonenumber::{ ParseError, PhoneNumber };
 use rocket::http::Status;
@@ -66,7 +67,7 @@ impl<'r> FromRequest<'r> for InternalApiKeyGuard {
     type Error = ApiError; // Or a simpler error if desired
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
         let expected_api_key = env
-            ::var("INTERNAL_API_KEY")
+            ::var(INTERNAL_API_KEY)
             .map_err(|e| {
                 error!("INTERNAL_API_KEY env var not set: {}", e);
                 ApiError::InternalServerError { message: "Server misconfiguration".to_string() }
@@ -96,7 +97,7 @@ impl<'r> FromRequest<'r> for GuardUser {
         debug!("Attempting internal authentication for microservice request.");
 
         // --- 1. Validate X-Internal-API-Key (Gateway's Secret) ---
-        let expected_api_key = match env::var("INTERNAL_API_KEY") {
+        let expected_api_key = match env::var(INTERNAL_API_KEY) {
             Ok(key) => key,
             Err(e) => {
                 error!("INTERNAL_API_KEY environment variable not set in microservice: {}", e);
@@ -382,7 +383,7 @@ impl<'r> FromRequest<'r> for GuardNewUser {
         debug!("Attempting internal authentication for microservice request.");
 
         // --- 1. Validate X-Internal-API-Key (Gateway's Secret) ---
-        let expected_api_key = match env::var("INTERNAL_API_KEY") {
+        let expected_api_key = match env::var(INTERNAL_API_KEY) {
             Ok(key) => key,
             Err(e) => {
                 error!("INTERNAL_API_KEY environment variable not set in microservice: {}", e);

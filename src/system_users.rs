@@ -1,3 +1,5 @@
+use common_lib::constants::{SYSTEM_USER_COUNTRY_CODE, SYSTEM_USER_FIREBASE_ID, SYSTEM_USER_ID, SYSTEM_USER_PHONE_NUMBER};
+
 use crate::bearer_token_guard::GuardUser;
 
 #[derive(Debug, Clone)]
@@ -11,7 +13,7 @@ pub struct SystemUserConfig {
 
 impl SystemUserConfig {
     pub fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
-        let country_code = std::env::var("SYSTEM_USER_COUNTRY_CODE")?;
+        let country_code = std::env::var(SYSTEM_USER_COUNTRY_CODE)?;
         let service_name = std::env::var("SERVICE_NAME").ok();
 
         // Generate contextual IDs
@@ -51,7 +53,7 @@ impl SystemUserConfig {
         service_name: &Option<String>
     ) -> Result<String, Box<dyn std::error::Error>> {
         // Try explicit env var first
-        if let Ok(explicit_id) = std::env::var("SYSTEM_USER_FIREBASE_ID") {
+        if let Ok(explicit_id) = std::env::var(SYSTEM_USER_FIREBASE_ID) {
             return Ok(explicit_id);
         }
 
@@ -68,7 +70,7 @@ impl SystemUserConfig {
 
     fn get_country_phone_number(country_code: &str) -> Result<String, Box<dyn std::error::Error>> {
         // Try explicit env var first
-        if let Ok(explicit_phone) = std::env::var("SYSTEM_USER_PHONE_NUMBER") {
+        if let Ok(explicit_phone) = std::env::var(SYSTEM_USER_PHONE_NUMBER) {
             return Ok(explicit_phone);
         }
 
@@ -87,7 +89,7 @@ impl SystemUserConfig {
 
     fn generate_user_id(country_code: &str, service_name: &Option<String>) -> String {
         // Try explicit env var first
-        if let Ok(explicit_id) = std::env::var("SYSTEM_USER_ID") {
+        if let Ok(explicit_id) = std::env::var(SYSTEM_USER_ID) {
             return explicit_id;
         }
 
