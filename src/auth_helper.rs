@@ -1,4 +1,6 @@
+use base64::{ Engine as _, engine::general_purpose };
 use common_lib::constants::{
+    FIREBASE_CREDENTIALS_BASE64,
     FIREBASE_PROJECT_ID,
     GOOGLE_API_KEYS_URL,
     LOCAL_FIREBASE_ACCOUNT_SERVICE_JSON_PATH,
@@ -26,7 +28,7 @@ use std::io::ErrorKind::{ InvalidData, NotFound };
 use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 use std::{ collections::{ HashMap, HashSet }, time::SystemTime };
-use tracing::{ debug, error, warn };
+use tracing::{ debug, error, info, warn };
 
 use crate::bearer_token_guard::GuardUser;
 
@@ -168,23 +170,24 @@ impl AuthHelper {
 
     pub async fn get_oauth2_access_token(&self) -> Result<String, Box<dyn Error + Send + Sync>> {
         let service_account = self.load_service_account().await?;
-        let iat = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let iat = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as usize;
         let exp = iat + 3600; // Token valid for 1 hour
 
-        let claims =
-            json!({
-            "iss": service_account.client_email,
-            "scope": "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/iam",
-            "aud": "https://oauth2.googleapis.com/token",
-            "iat": iat,
-            "exp": exp,
-        });
+        let claims = Claims {
+            iss: service_account.client_email.clone(),
+            sub: service_account.client_email.clone(),
+            aud: "https://oauth2.googleapis.com/token".to_string(),
+            iat,
+            exp,
+            uid: None,
+            phone_number: String::new(),
+        };
 
         let key = EncodingKey::from_rsa_pem(service_account.private_key.as_bytes())?;
         let jwt = encode(&Header::new(Algorithm::RS256), &claims, &key)?;
 
         let client = Client::new();
-        let res = client
+        let response = client
             .post("https://oauth2.googleapis.com/token")
             .form(
                 &[
@@ -194,8 +197,8 @@ impl AuthHelper {
             )
             .send().await?;
 
-        let res_json: serde_json::Value = res.json().await?;
-        let access_token = res_json["access_token"]
+        let token_response: serde_json::Value = response.json().await?;
+        let access_token = token_response["access_token"]
             .as_str()
             .ok_or("Failed to get access token")?
             .to_string();
@@ -254,6 +257,97 @@ impl AuthHelper {
         }
 
         request_builder
+    }
+
+    pub async fn load_service_account_from_encoded_base64(
+        &self
+    ) -> Result<FirebaseServiceAccount, Box<dyn Error + Send + Sync>> {
+        // Try base64 environment variable first (for production/AWS deployment)
+        if let Ok(base64_credentials) = std::env::var(FIREBASE_CREDENTIALS_BASE64) {
+            debug!("Loading Firebase service account from base64 environment variable");
+            // Decode base64 to get JSON string
+            let decoded_bytes = general_purpose::STANDARD.decode(&base64_credentials).map_err(|e| {
+                error!("Failed to decode base64 Firebase credentials: {}", e);
+                Box::new(
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Invalid base64 Firebase credentials: {}", e)
+                    )
+                ) as Box<dyn Error + Send + Sync>
+            })?;
+
+            let json_string = String::from_utf8(decoded_bytes).map_err(|e| {
+                error!("Failed to convert decoded bytes to UTF-8: {}", e);
+                Box::new(
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Invalid UTF-8 in Firebase credentials: {}", e)
+                    )
+                ) as Box<dyn Error + Send + Sync>
+            })?;
+
+            let service_account: FirebaseServiceAccount = serde_json
+                ::from_str(&json_string)
+                .map_err(|e| {
+                    error!("Failed to parse Firebase service account JSON: {}", e);
+                    Box::new(
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("Invalid Firebase service account JSON: {}", e)
+                        )
+                    ) as Box<dyn Error + Send + Sync>
+                })?;
+
+            info!("Successfully loaded Firebase service account from environment variable");
+            return Ok(service_account);
+        }
+
+        // Fallback to local file (for local development)
+        if
+            let Ok(firebase_service_account_path) = std::env::var(
+                LOCAL_FIREBASE_ACCOUNT_SERVICE_JSON_PATH
+            )
+        {
+            debug!("Loading Firebase service account from local file: {}", firebase_service_account_path);
+
+            let mut file = File::open(&firebase_service_account_path).map_err(|e| {
+                error!(
+                    "Failed to open Firebase service account file '{}': {}",
+                    firebase_service_account_path,
+                    e
+                );
+                Box::new(e) as Box<dyn Error + Send + Sync>
+            })?;
+
+            let mut contents = String::new();
+            std::io::Read::read_to_string(&mut file, &mut contents).map_err(|e| {
+                error!("Failed to read Firebase service account file: {}", e);
+                Box::new(e) as Box<dyn Error + Send + Sync>
+            })?;
+
+            let service_account: FirebaseServiceAccount = serde_json
+                ::from_str(&contents)
+                .map_err(|e| {
+                    error!("Failed to parse Firebase service account JSON from file: {}", e);
+                    Box::new(e) as Box<dyn Error + Send + Sync>
+                })?;
+
+            info!("Successfully loaded Firebase service account from local file");
+            return Ok(service_account);
+        }
+
+        // Neither environment variable nor file path available
+        let error_msg = format!(
+            "Firebase service account not found. Set either {} (base64) or {} (file path) environment variable",
+            FIREBASE_CREDENTIALS_BASE64,
+            LOCAL_FIREBASE_ACCOUNT_SERVICE_JSON_PATH
+        );
+        error!("{}", error_msg);
+        Err(
+            Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, error_msg)) as Box<
+                dyn Error + Send + Sync
+            >
+        )
     }
 }
 
