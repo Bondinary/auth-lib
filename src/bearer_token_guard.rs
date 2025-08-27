@@ -37,6 +37,7 @@ pub struct GuardUser {
     pub default_language: Option<String>,
     pub current_venue_type: Option<String>,
     pub industry_ids: Option<Vec<String>>,
+    pub city: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +150,13 @@ impl<'r> FromRequest<'r> for GuardUser {
                 ));
             }
         };
+
+        // --- 3. Extract City from Headers (Optional) ---
+        let city = request
+            .headers()
+            .get_one("X-City")
+            .map(|c| c.to_string());
+        debug!("City from header: {:?}", city);
 
         let parsed_phone_number_result: Result<PhoneNumber, ParseError> = phonenumber::parse(
             None,
@@ -289,6 +297,7 @@ impl<'r> FromRequest<'r> for GuardUser {
                 default_language: user_service_auth_data.default_language,
                 current_venue_type: user_service_auth_data.current_venue_type,
                 industry_ids: user_service_auth_data.industry_ids,
+                city,
             })
         } else {
             let status = user_service_response_raw.status();
@@ -351,12 +360,24 @@ impl<'a> OpenApiFromRequest<'a> for GuardUser {
             extensions: Object::default(),
         };
 
+        // --- 4. Define Security Scheme for X-City ---
+        let city_scheme_name = "CityAuth";
+        let _city_scheme = SecurityScheme {
+            description: Some("User's city, propagated by the API Gateway (optional).".to_owned()),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-City".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
         // --- Create a Security Requirement that lists ALL of these schemes ---
         // This tells OpenAPI that all three headers are required.
         let mut security_req = SecurityRequirement::new();
         security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new()); // No scopes for API keys
         security_req.insert(firebase_user_id_scheme_name.to_owned(), Vec::new());
         security_req.insert(phone_number_scheme_name.to_owned(), Vec::new());
+        security_req.insert(city_scheme_name.to_owned(), Vec::new());
 
         // --- Return RequestHeaderInput::Security ---
         // You pass one of the schemes as the primary, and the combined requirement.
@@ -600,7 +621,7 @@ impl<'r> FromRequest<'r> for GuardUserOrInternal {
         if has_firebase_uid && has_phone_number {
             // This looks like a user request, validate full user authentication
             debug!("GuardUserOrInternal: Detected user request, validating full authentication");
-            
+
             match GuardUser::from_request(request).await {
                 Outcome::Success(guard_user) => {
                     debug!("GuardUserOrInternal: User authentication successful");
@@ -615,7 +636,7 @@ impl<'r> FromRequest<'r> for GuardUserOrInternal {
         } else {
             // No user headers, check for internal API key only
             debug!("GuardUserOrInternal: No user headers detected, checking internal API key");
-            
+
             match InternalApiKeyGuard::from_request(request).await {
                 Outcome::Success(_) => {
                     debug!("GuardUserOrInternal: Internal API key validation successful");
@@ -680,8 +701,129 @@ impl GuardUserOrInternal {
                     default_language: None,
                     current_venue_type: None,
                     industry_ids: None,
+                    city: None,
                 }
             }
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GuardGuest {
+    pub firebase_user_id: String,
+    pub roles: Vec<String>, // Will contain ["Guest"]
+    pub city: Option<String>,
+}
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for GuardGuest {
+    type Error = ApiError;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        debug!("Attempting guest authentication for microservice request.");
+
+        // --- 1. Validate X-Internal-API-Key (Gateway's Secret) ---
+        let expected_api_key = match env::var(INTERNAL_API_KEY) {
+            Ok(key) => key,
+            Err(e) => {
+                error!("INTERNAL_API_KEY environment variable not set in microservice: {}", e);
+                return Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "Microservice internal API key not configured.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        let provided_api_key: Option<&str> = request.headers().get_one("X-Internal-API-Key");
+
+        if provided_api_key.is_none() || provided_api_key.unwrap() != expected_api_key {
+            warn!("Invalid or missing X-Internal-API-Key from calling service. Request blocked.");
+            return Outcome::Error((
+                Status::Forbidden,
+                ApiError::Unauthorized {
+                    message: "Unauthorized internal access. Invalid or missing internal API key.".to_string(),
+                },
+            ));
+        }
+        debug!("X-Internal-API-Key validated successfully.");
+
+        // --- 2. Extract Firebase UID from Headers (Required for Guest) ---
+        let firebase_user_id = match request.headers().get_one("X-Firebase-UID") {
+            Some(uid) => uid.to_string(),
+            None => {
+                error!("Missing X-Firebase-UID header from gateway for guest user.");
+                return Outcome::Error((
+                    Status::BadRequest,
+                    ApiError::BadRequest {
+                        message: "Missing X-Firebase-UID header for guest authentication.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        // --- 3. Extract City from Headers (Optional) ---
+        let city = request
+            .headers()
+            .get_one("X-City")
+            .map(|c| c.to_string());
+        debug!("Guest user city from header: {:?}", city);
+
+        debug!("Guest user authenticated with Firebase UID: {}", firebase_user_id);
+
+        Outcome::Success(GuardGuest {
+            firebase_user_id,
+            roles: vec!["Guest".to_string()],
+            city,
+        })
+    }
+}
+
+// OpenAPI configuration for GuardGuest
+impl<'a> OpenApiFromRequest<'a> for GuardGuest {
+    fn from_request_input(
+        _gen: &mut OpenApiGenerator,
+        _name: String,
+        _required: bool
+    ) -> rocket_okapi::Result<RequestHeaderInput> {
+        // --- 1. Define Security Scheme for X-Internal-API-Key ---
+        let internal_api_key_scheme_name = "InternalApiKeyAuth";
+        let internal_api_key_scheme = SecurityScheme {
+            description: Some(
+                "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-Internal-API-Key".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 2. Define Security Scheme for X-Firebase-UID ---
+        let firebase_user_id_scheme_name = "FirebaseUidAuth";
+        let _firebase_user_id_scheme = SecurityScheme {
+            description: Some(
+                "Firebase User ID (UID) of the guest user, propagated by the API Gateway.".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-Firebase-UID".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- Create a Security Requirement ---
+        let mut security_req = SecurityRequirement::new();
+        security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new());
+        security_req.insert(firebase_user_id_scheme_name.to_owned(), Vec::new());
+
+        Ok(
+            RequestHeaderInput::Security(
+                "InternalMicroserviceHeaders".to_owned(),
+                internal_api_key_scheme,
+                security_req
+            )
+        )
     }
 }

@@ -45,6 +45,7 @@ impl SystemUserConfig {
             default_language: Some("EN".to_string()),
             current_venue_type: None,
             industry_ids: None,
+            city: None,
         }
     }
     
