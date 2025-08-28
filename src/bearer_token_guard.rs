@@ -769,13 +769,8 @@ impl<'r> FromRequest<'r> for GuardUserOrAnonymous {
 
 impl GuardUserOrAnonymous {
     pub fn can_perform_action(&self, permission: &Permission, context: &ActionContext) -> bool {
-        match self {
-            GuardUserOrAnonymous::User(user) => user.can_perform_action(permission, context),
-            GuardUserOrAnonymous::Anonymous(_) => {
-                // Anonymous users can only view public content
-                matches!(permission, Permission::ViewPublicContent)
-            }
-        }
+        use crate::permissions::PermissionEngine;
+        PermissionEngine::evaluate_permission(self, permission, context)
     }
 
     pub fn require_permission(

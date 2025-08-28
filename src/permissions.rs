@@ -81,16 +81,16 @@ pub struct VenueVerificationRequirement {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum PolicyContext {
-    Global(String), // "Global"
+    Simple(String), // "Global", "Client", "Venue"
     Typed {
         #[serde(rename = "type")]
-        context_type: String, // "Client", "Venue", "Geographic"
-
+        context_type: String,
+        
         #[serde(skip_serializing_if = "Option::is_none")]
-        venue_type: Option<VenueType>, // For venue-specific policies
-
+        venue_type: Option<VenueType>,
+        
         #[serde(skip_serializing_if = "Option::is_none")]
-        client_types: Option<Vec<String>>, // For client-type-specific policies
+        client_types: Option<Vec<String>>,
     },
 }
 
@@ -466,7 +466,27 @@ impl PolicyEngine {
         actual_context: &ActionContext
     ) -> bool {
         match (policy_context, actual_context) {
-            (PolicyContext::Global(_), _) => true,
+            // Handle simple string format
+            (PolicyContext::Simple(context_str), ActionContext::Global) => {
+                context_str == "Global"
+            }
+            
+            // Handle typed format
+            (PolicyContext::Typed { context_type, .. }, ActionContext::Global) => {
+                context_type == "Global"
+            }
+
+            (PolicyContext::Simple(context_str), ActionContext::Client { .. }) => {
+                context_str == "Client"
+            }
+
+            (PolicyContext::Typed { context_type, .. }, ActionContext::Client { .. }) => {
+                context_type == "Client"
+            }
+
+            (PolicyContext::Simple(context_str), ActionContext::Venue { .. }) => {
+                context_str == "Venue"
+            }
 
             (
                 PolicyContext::Typed { context_type, venue_type, .. },
@@ -474,14 +494,6 @@ impl PolicyEngine {
             ) => {
                 context_type == "Venue" &&
                     (venue_type.is_none() || venue_type == &Some(actual_venue_type.clone()))
-            }
-
-            (PolicyContext::Typed { context_type, .. }, ActionContext::Client { .. }) => {
-                context_type == "Client"
-            }
-
-            (PolicyContext::Typed { context_type, .. }, ActionContext::Geographic { .. }) => {
-                context_type == "Geographic"
             }
 
             _ => false,
@@ -557,8 +569,6 @@ impl PermissionEngine {
                 engine.evaluate_permission(user, permission, context)
             }
             GuardUserOrAnonymous::Anonymous(anonymous) => {
-                // Anonymous users have very limited permissions
-                let engine = POLICY_ENGINE.read().unwrap();
                 // Create a minimal user representation for policy evaluation
                 let minimal_user = GuardUser {
                     user_id: anonymous.firebase_user_id.clone(),
@@ -570,6 +580,8 @@ impl PermissionEngine {
                     roles: HashSet::new(),
                     verifications: None,
                 };
+
+                let engine = POLICY_ENGINE.read().unwrap();
                 engine.evaluate_permission(&minimal_user, permission, context)
             }
         }
