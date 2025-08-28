@@ -1,21 +1,57 @@
 use chrono::{ DateTime, Utc };
 use common_lib::constants::INTERNAL_API_KEY;
 use common_lib::error::ApiError;
+use once_cell::sync::Lazy;
 use rocket::http::Status;
 use rocket::request::{ FromRequest, Outcome, Request };
 use rocket_okapi::r#gen::OpenApiGenerator;
-use rocket_okapi::okapi::openapi3::{Object, SecurityRequirement, SecurityScheme, SecuritySchemeData};
+use rocket_okapi::okapi::openapi3::{
+    Object,
+    SecurityRequirement,
+    SecurityScheme,
+    SecuritySchemeData,
+};
 use rocket_okapi::request::RequestHeaderInput;
 use serde::{ Deserialize, Serialize };
+use users_service_domain::users_models::UserRole;
 use venues_service_domain::client_models::{ AuthType, Client, ClientAuth };
 use venues_service_domain::venue_models::{ Venue, VenueType };
 use std::collections::HashSet;
 use std::env;
-use std::fmt::Display;
-use std::sync::Arc;
+use std::sync::{ Arc, RwLock };
 use tracing::{ debug, error, info, warn };
-use crate::permissions::{ ActionContext, Permission, PermissionEngine, UserServiceAuthResponse };
+use crate::permissions::{
+    ActionContext,
+    NoOpPermissionChecker,
+    Permission,
+    PermissionChecker,
+    UserServiceAuthResponse,
+};
 use rocket_okapi::request::{ OpenApiFromRequest };
+
+// Global permission checker that can be safely updated
+static PERMISSION_CHECKER: Lazy<RwLock<Option<Arc<dyn PermissionChecker>>>> = Lazy::new(|| {
+    RwLock::new(None)
+});
+
+/// Set the permission checker safely
+pub fn set_permission_checker(checker: Arc<dyn PermissionChecker>) {
+    let mut guard = PERMISSION_CHECKER.write().unwrap();
+    *guard = Some(checker);
+    info!("Permission checker updated successfully");
+}
+
+/// Get the current permission checker or return default
+fn get_permission_checker() -> Arc<dyn PermissionChecker> {
+    let guard = PERMISSION_CHECKER.read().unwrap();
+    match guard.as_ref() {
+        Some(checker) => checker.clone(),
+        None => {
+            warn!("No permission checker set, using default NoOp checker");
+            Arc::new(NoOpPermissionChecker)
+        }
+    }
+}
 
 // Struct to represent the BearerToken
 pub struct BearerToken(pub String);
@@ -37,7 +73,7 @@ pub struct GuardUser {
     pub phone_number: Option<String>,
     pub country_code: String,
     pub city: Option<String>,
-    pub user_state: Option<UserState>,
+    pub user_role: Option<UserRole>,
     pub roles: HashSet<ClientUserRole>,
     pub verifications: Option<UserVerifications>,
 }
@@ -57,25 +93,6 @@ pub struct GuardNewUser {
 
 #[derive(Debug, Clone)]
 pub struct GuardInternal;
-
-// === User State and Role System ===
-
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub enum UserState {
-    Anonymous, // Just Firebase anonymous
-    PhoneVerified, // Phone number verified
-    Verified, // Has email/university verifications
-}
-
-impl Display for UserState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            UserState::Anonymous => write!(f, "Anonymous"),
-            UserState::PhoneVerified => write!(f, "PhoneVerified"),
-            UserState::Verified => write!(f, "Verified"),
-        }
-    }
-}
 
 // === Verification System ===
 
@@ -170,7 +187,7 @@ pub enum ClientUserRole {
     // General roles
     Guest,
     Sponsor,
-    System
+    System,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -215,7 +232,7 @@ impl GuardUser {
     }
 
     /// Check if user can access a specific venue based on client auth requirements
-    pub fn can_access_venue(&self, venue: &Venue, client: &Client) -> bool {
+    pub fn can_access_venue(&self, client: &Client) -> bool {
         // If client doesn't require auth, anyone can access
         if let Some(client_auth) = &client.auth {
             if !client_auth.requires_auth {
@@ -312,7 +329,8 @@ impl GuardUser {
 
     /// Check if user can perform action in specific context
     pub fn can_perform_action(&self, permission: &Permission, context: &ActionContext) -> bool {
-        PermissionEngine::evaluate_user_permission(self, permission, context)
+        let checker = get_permission_checker();
+        checker.can_perform_action(self, permission, context)
     }
 
     /// Require permission or return error
@@ -328,7 +346,7 @@ impl GuardUser {
                     self.user_id,
                     permission,
                     context,
-                    self.user_state,
+                    self.user_role,
                     self.roles
                 ),
             });
@@ -338,7 +356,8 @@ impl GuardUser {
 
     /// Get user's current capabilities
     pub fn get_capabilities(&self, context: &ActionContext) -> HashSet<Permission> {
-        PermissionEngine::get_user_capabilities(self, context)
+        let checker = get_permission_checker();
+        checker.get_user_capabilities(self, context)
     }
 
     /// Check if user has specific role
@@ -603,7 +622,7 @@ impl<'r> FromRequest<'r> for GuardUser {
 
         if !response.status().is_success() {
             let status = response.status();
-            error!("User Service returned error: {}", status);
+            debug!("User Service returned error: {}", status);
             return Outcome::Error((
                 Status::InternalServerError,
                 ApiError::InternalServerError {
@@ -667,7 +686,7 @@ impl<'r> FromRequest<'r> for GuardUser {
         info!(
             "User authenticated: ID={}, State={:?}, Roles={:?}",
             auth_data.user_id,
-            auth_data.user_state,
+            auth_data.user_role,
             roles
         );
 
@@ -677,7 +696,7 @@ impl<'r> FromRequest<'r> for GuardUser {
             phone_number: phone_number_str,
             country_code,
             city,
-            user_state: Some(auth_data.user_state),
+            user_role: Some(auth_data.user_role),
             roles,
             verifications: Some(auth_data.verifications),
         })
@@ -769,8 +788,8 @@ impl<'r> FromRequest<'r> for GuardUserOrAnonymous {
 
 impl GuardUserOrAnonymous {
     pub fn can_perform_action(&self, permission: &Permission, context: &ActionContext) -> bool {
-        use crate::permissions::PermissionEngine;
-        PermissionEngine::evaluate_permission(self, permission, context)
+        let checker = get_permission_checker();
+        checker.can_perform_action_user_or_anonymous(self, permission, context)
     }
 
     pub fn require_permission(
@@ -909,7 +928,6 @@ impl<'r> FromRequest<'r> for GuardInternal {
     }
 }
 
-
 // === OpenAPI Implementations ===
 
 // OpenAPI configuration for GuardUser
@@ -917,7 +935,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardUser {
     fn from_request_input(
         _gen: &mut OpenApiGenerator,
         _name: String,
-        _required: bool,
+        _required: bool
     ) -> rocket_okapi::Result<RequestHeaderInput> {
         // --- 1. Define Security Scheme for X-Internal-API-Key ---
         let internal_api_key_scheme_name = "InternalApiKeyAuth";
@@ -991,7 +1009,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardAnonymous {
     fn from_request_input(
         _gen: &mut OpenApiGenerator,
         _name: String,
-        _required: bool,
+        _required: bool
     ) -> rocket_okapi::Result<RequestHeaderInput> {
         // --- 1. Define Security Scheme for X-Internal-API-Key ---
         let internal_api_key_scheme_name = "InternalApiKeyAuth";
@@ -1051,11 +1069,11 @@ impl<'a> OpenApiFromRequest<'a> for GuardUserOrAnonymous {
     fn from_request_input(
         _gen: &mut OpenApiGenerator,
         _name: String,
-        _required: bool,
+        _required: bool
     ) -> rocket_okapi::Result<RequestHeaderInput> {
         // This guard accepts either user or anonymous authentication
         // We'll document it as the more complete user authentication scheme
-        
+
         // --- 1. Define Security Scheme for X-Internal-API-Key ---
         let internal_api_key_scheme_name = "InternalApiKeyAuth";
         let internal_api_key_scheme = SecurityScheme {
@@ -1082,34 +1100,11 @@ impl<'a> OpenApiFromRequest<'a> for GuardUserOrAnonymous {
             extensions: Object::default(),
         };
 
-        // --- 3. Define Security Scheme for X-Phone-Number ---
-        let phone_number_scheme_name = "PhoneNumberAuth";
-        let _phone_number_scheme = SecurityScheme {
-            description: Some(
-                "User's phone number in E.164 format - optional, only for authenticated users.".to_owned()
-            ),
-            data: SecuritySchemeData::ApiKey {
-                name: "X-Phone-Number".to_owned(),
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
-        // --- 4. Define Security Scheme for X-City ---
-        let city_scheme_name = "CityAuth";
-        let _city_scheme = SecurityScheme {
-            description: Some("User's city, propagated by the API Gateway (optional).".to_owned()),
-            data: SecuritySchemeData::ApiKey {
-                name: "X-City".to_owned(),
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
         // --- Create a Security Requirement (only required headers) ---
         let mut security_req = SecurityRequirement::new();
         security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new());
         security_req.insert(firebase_user_id_scheme_name.to_owned(), Vec::new());
+
         // Note: Phone and City are optional, so we don't include them as required
 
         Ok(
@@ -1127,7 +1122,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardNewUser {
     fn from_request_input(
         _gen: &mut OpenApiGenerator,
         _name: String,
-        _required: bool,
+        _required: bool
     ) -> rocket_okapi::Result<RequestHeaderInput> {
         // --- 1. Define Security Scheme for X-Internal-API-Key ---
         let internal_api_key_scheme_name = "InternalApiKeyAuth";
@@ -1189,7 +1184,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardInternal {
     fn from_request_input(
         _gen: &mut OpenApiGenerator,
         _name: String,
-        _required: bool,
+        _required: bool
     ) -> rocket_okapi::Result<RequestHeaderInput> {
         // --- 1. Define Security Scheme for X-Internal-API-Key ---
         let internal_api_key_scheme_name = "InternalApiKeyAuth";

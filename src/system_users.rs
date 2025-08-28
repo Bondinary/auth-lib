@@ -49,7 +49,7 @@ impl SystemUserConfig {
             firebase_user_id: self.firebase_user_id.clone(),
             phone_number: Some(self.phone_number.clone()),
             city: None,
-            user_state: None,
+            user_role: None,
             verifications: None,
         }
     }
