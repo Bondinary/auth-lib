@@ -1,6 +1,13 @@
-use common_lib::constants::{SYSTEM_USER_COUNTRY_CODE, SYSTEM_USER_FIREBASE_ID, SYSTEM_USER_ID, SYSTEM_USER_PHONE_NUMBER};
+use std::collections::HashSet;
 
-use crate::bearer_token_guard::GuardUser;
+use common_lib::constants::{
+    SYSTEM_USER_COUNTRY_CODE,
+    SYSTEM_USER_FIREBASE_ID,
+    SYSTEM_USER_ID,
+    SYSTEM_USER_PHONE_NUMBER,
+};
+
+use crate::bearer_token_guard::{ GuardUser, ClientUserRole };
 
 #[derive(Debug, Clone)]
 pub struct SystemUserConfig {
@@ -32,23 +39,21 @@ impl SystemUserConfig {
 
     /// Convert SystemUserConfig to GuardUser for service initialization
     pub fn to_guard_user(&self) -> GuardUser {
+        let mut roles = HashSet::new();
+        roles.insert(ClientUserRole::System);
+
         GuardUser {
             user_id: self.user_id.clone(),
-            roles: vec!["System".to_string()],
+            roles,
             country_code: self.country_code.clone(),
-            firebase_user_id: Some(self.firebase_user_id.clone()),
+            firebase_user_id: self.firebase_user_id.clone(),
             phone_number: Some(self.phone_number.clone()),
-            current_client_id: None,
-            current_venue_id: None,
-            major_id: None,
-            area_of_interest_ids: None,
-            default_language: Some("EN".to_string()),
-            current_venue_type: None,
-            industry_ids: None,
             city: None,
+            user_state: None,
+            verifications: None,
         }
     }
-    
+
     fn generate_firebase_id(
         country_code: &str,
         service_name: &Option<String>

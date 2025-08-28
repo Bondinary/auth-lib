@@ -1,20 +1,17 @@
+use chrono::{ DateTime, Utc };
 use common_lib::constants::INTERNAL_API_KEY;
 use common_lib::error::ApiError;
-use phonenumber::{ ParseError, PhoneNumber };
 use rocket::http::Status;
 use rocket::request::{ FromRequest, Outcome, Request };
-use rocket_okapi::r#gen::OpenApiGenerator;
-use rocket_okapi::okapi::openapi3::{
-    Object,
-    SecurityRequirement,
-    SecurityScheme,
-    SecuritySchemeData,
-};
-use rocket_okapi::request::{ OpenApiFromRequest, RequestHeaderInput };
 use serde::{ Deserialize, Serialize };
+use venues_service_domain::client_models::{ AuthType, Client, ClientAuth };
+use venues_service_domain::venue_models::{ Venue, VenueType };
+use std::collections::HashSet;
 use std::env;
+use std::fmt::Display;
 use std::sync::Arc;
 use tracing::{ debug, error, info, warn };
+use crate::permissions::{ ActionContext, Permission, PermissionEngine, UserServiceAuthResponse };
 
 // Struct to represent the BearerToken
 pub struct BearerToken(pub String);
@@ -24,111 +21,480 @@ pub struct BearerToken(pub String);
 pub struct UsersServiceUrl(pub String);
 
 #[derive(Debug, Clone)]
-pub struct GuardUser {
-    pub user_id: String,
-    pub roles: Vec<String>,
-    pub country_code: String,
-    pub firebase_user_id: Option<String>,
-    pub phone_number: Option<String>,
-    pub current_client_id: Option<String>,
-    pub current_venue_id: Option<String>,
-    pub major_id: Option<String>,
-    pub area_of_interest_ids: Option<Vec<String>>,
-    pub default_language: Option<String>,
-    pub current_venue_type: Option<String>,
-    pub industry_ids: Option<Vec<String>>,
+pub struct GuardAnonymous {
+    pub firebase_user_id: String,
     pub city: Option<String>,
 }
 
 #[derive(Debug, Clone)]
+pub struct GuardUser {
+    pub user_id: String,
+    pub firebase_user_id: String,
+    pub phone_number: Option<String>,
+    pub country_code: String,
+    pub city: Option<String>,
+    pub user_state: Option<UserState>,
+    pub roles: HashSet<ClientUserRole>,
+    pub verifications: Option<UserVerifications>,
+}
+
+#[derive(Debug, Clone)]
 pub struct GuardNewUser {
+    pub firebase_user_id: String,
+    pub phone_number: String,
     pub country_code: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")] // Assuming camelCase from User Service JSON response
-pub struct UserServiceAuthResponse {
-    pub user_id: String,
-    pub roles: Vec<String>, // Assuming roles are strings from User Service
-    pub current_client_id: Option<String>,
-    pub current_venue_id: Option<String>,
-    pub major_id: Option<String>,
-    pub area_of_interest_ids: Option<Vec<String>>,
-    pub default_language: Option<String>,
-    pub current_venue_type: Option<String>,
-    pub industry_ids: Option<Vec<String>>,
-    // Add any other fields the User Service might return here, e.g.,
-    // pub is_active: bool,
+#[derive(Debug, Clone)]
+pub struct GuardInternal;
+
+// === User State and Role System ===
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub enum UserState {
+    Anonymous, // Just Firebase anonymous
+    PhoneVerified, // Phone number verified
+    Verified, // Has email/university verifications
 }
 
-pub struct InternalApiKeyGuard;
-
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for InternalApiKeyGuard {
-    type Error = ApiError; // Or a simpler error if desired
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let expected_api_key = env
-            ::var(INTERNAL_API_KEY)
-            .map_err(|e| {
-                error!("INTERNAL_API_KEY env var not set: {}", e);
-                ApiError::InternalServerError { message: "Server misconfiguration".to_string() }
-            })
-            .expect("INTERNAL_API_KEY must be set"); // Or handle this gracefully.
-
-        let provided_api_key: Option<&str> = request.headers().get_one("X-Internal-API-Key");
-
-        if provided_api_key.is_none() || provided_api_key.unwrap() != expected_api_key {
-            warn!("Unauthorized internal access: Invalid or missing X-Internal-API-Key.");
-            Outcome::Error((
-                Status::Forbidden,
-                ApiError::Unauthorized { message: "Unauthorized".to_string() },
-            ))
-        } else {
-            Outcome::Success(InternalApiKeyGuard)
+impl Display for UserState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UserState::Anonymous => write!(f, "Anonymous"),
+            UserState::PhoneVerified => write!(f, "PhoneVerified"),
+            UserState::Verified => write!(f, "Verified"),
         }
     }
 }
 
+// === Verification System ===
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserVerifications {
+    pub phone_verified: bool,
+    pub phone_verified_at: Option<DateTime<Utc>>,
+
+    // Client-level verifications (University, Company, Organization)
+    pub client_verifications: Vec<ClientVerification>,
+
+    // Venue-specific verifications (for special events, conferences, etc.)
+    pub venue_verifications: Vec<VenueVerification>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientVerification {
+    pub client_id: String, // References Client.id from your venues service
+    pub client_name: String, // University name, Company name, etc.
+    pub verification_method: ClientVerificationMethod,
+    pub verified_email: Option<String>, // For email domain verification
+    pub token_used: Option<String>, // For token verification
+    pub user_role: ClientUserRole, // Role within this client organization
+    pub verified_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub status: VerificationStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VenueVerification {
+    pub venue_id: String, // References Venue.id
+    pub venue_name: String,
+    pub client_id: String, // Parent client of this venue
+    pub venue_type: VenueType, // Campus, CoffeeShop, etc.
+    pub verification_method: VenueVerificationMethod,
+    pub verified_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>, // For temporary access (conferences)
+    pub status: VerificationStatus,
+}
+
+// === Verification Methods ===
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ClientVerificationMethod {
+    EmailDomain {
+        domain: String, // @oxford.ac.uk, @google.com
+        verified_email: String,
+    },
+    ClientToken {
+        token: String, // Client-provided token
+    },
+    ManualApproval {
+        approved_by: String, // Admin who approved
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum VenueVerificationMethod {
+    InheritFromClient, // User has client verification
+    VenueSpecificToken {
+        token: String, // Event/conference specific token
+    },
+    QRCodeScan {
+        qr_data: String,
+    },
+    ProximityBasedCheckin, // Location-based check-in
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ClientUserRole {
+    // Bondinary admin
+    Admin,
+
+    // University roles
+    Student,
+    Staff,
+    Alumni,
+
+    // Coffee shop roles
+    CoffeeShopAttendee,
+    CoffeeShopManager,
+
+    // Coworking space roles
+    CoworkingSpaceAttendee,
+    CoworkingSpaceManager,
+
+    // Conference roles
+    ConferenceAttendee,
+    ConferenceSpeaker,
+
+    // General roles
+    Guest,
+    Sponsor,
+    System
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum VerificationMethod {
+    Email,
+    Token,
+    Manual,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum VerificationStatus {
+    Active,
+    Expired,
+    Revoked,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ClientScope {
+    AllVenues,
+    SpecificVenues(Vec<String>),
+    VenueTypes(Vec<VenueType>),
+}
+
+// === Flexible User Guard with Permissions ===
+
+impl GuardUser {
+    /// Check if user can access a specific client (based on existing Client model)
+    pub fn can_access_client(&self, client: &Client) -> bool {
+        if let Some(verifications) = &self.verifications {
+            // Check if user has verification for this client
+            verifications.client_verifications
+                .iter()
+                .any(
+                    |cv|
+                        cv.client_id == *client.id.as_ref().unwrap_or(&String::new()) &&
+                        cv.status == VerificationStatus::Active &&
+                        !self.is_client_verification_expired(cv)
+                )
+        } else {
+            false
+        }
+    }
+
+    /// Check if user can access a specific venue based on client auth requirements
+    pub fn can_access_venue(&self, venue: &Venue, client: &Client) -> bool {
+        // If client doesn't require auth, anyone can access
+        if let Some(client_auth) = &client.auth {
+            if !client_auth.requires_auth {
+                return true;
+            }
+
+            match client_auth.auth_type {
+                Some(AuthType::None) => true,
+                Some(AuthType::EmailDomain) => {
+                    self.has_client_email_domain_verification(client, client_auth)
+                }
+                Some(AuthType::Token) => { self.has_client_token_verification(client, client_auth) }
+                None => false,
+            }
+        } else {
+            // No auth config means open access
+            true
+        }
+    }
+
+    /// Check if user has email domain verification for this client
+    fn has_client_email_domain_verification(
+        &self,
+        client: &Client,
+        client_auth: &ClientAuth
+    ) -> bool {
+        if let Some(verifications) = &self.verifications {
+            if let Some(allowed_domains) = &client_auth.allowed_email_domains {
+                return verifications.client_verifications
+                    .iter()
+                    .any(|cv| {
+                        cv.client_id == *client.id.as_ref().unwrap_or(&String::new()) &&
+                            cv.status == VerificationStatus::Active &&
+                            matches!(&cv.verification_method, ClientVerificationMethod::EmailDomain { domain, .. } 
+                            if allowed_domains.iter().any(|ad| domain.ends_with(ad)))
+                    });
+            }
+        }
+        false
+    }
+
+    /// Check if user has token verification for this client
+    fn has_client_token_verification(&self, client: &Client, client_auth: &ClientAuth) -> bool {
+        if let Some(verifications) = &self.verifications {
+            if let Some(client_token) = &client_auth.client_token {
+                return verifications.client_verifications
+                    .iter()
+                    .any(|cv| {
+                        cv.client_id == *client.id.as_ref().unwrap_or(&String::new()) &&
+                            cv.status == VerificationStatus::Active &&
+                            matches!(&cv.verification_method, ClientVerificationMethod::ClientToken { token } 
+                            if token == client_token)
+                    });
+            }
+        }
+        false
+    }
+
+    /// Check if user has specific venue verification (for events, conferences)
+    pub fn has_venue_specific_verification(&self, venue_id: &str) -> bool {
+        if let Some(verifications) = &self.verifications {
+            verifications.venue_verifications
+                .iter()
+                .any(
+                    |vv|
+                        vv.venue_id == venue_id &&
+                        vv.status == VerificationStatus::Active &&
+                        !self.is_venue_verification_expired(vv)
+                )
+        } else {
+            false
+        }
+    }
+
+    /// Get user's role within a specific client organization
+    pub fn get_client_role(&self, client_id: &str) -> Option<ClientUserRole> {
+        if let Some(verifications) = &self.verifications {
+            verifications.client_verifications
+                .iter()
+                .find(|cv| cv.client_id == client_id && cv.status == VerificationStatus::Active)
+                .map(|cv| cv.user_role.clone())
+        } else {
+            None
+        }
+    }
+
+    fn is_client_verification_expired(&self, verification: &ClientVerification) -> bool {
+        if let Some(expires_at) = verification.expires_at { Utc::now() > expires_at } else { false }
+    }
+
+    fn is_venue_verification_expired(&self, verification: &VenueVerification) -> bool {
+        if let Some(expires_at) = verification.expires_at { Utc::now() > expires_at } else { false }
+    }
+
+    /// Check if user can perform action in specific context
+    pub fn can_perform_action(&self, permission: &Permission, context: &ActionContext) -> bool {
+        PermissionEngine::evaluate_user_permission(self, permission, context)
+    }
+
+    /// Require permission or return error
+    pub fn require_permission(
+        &self,
+        permission: &Permission,
+        context: &ActionContext
+    ) -> Result<(), ApiError> {
+        if !self.can_perform_action(permission, context) {
+            return Err(ApiError::Unauthorized {
+                message: format!(
+                    "User {} lacks permission {:?} in context {:?}. Current state: {:?}, roles: {:?}",
+                    self.user_id,
+                    permission,
+                    context,
+                    self.user_state,
+                    self.roles
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// Get user's current capabilities
+    pub fn get_capabilities(&self, context: &ActionContext) -> HashSet<Permission> {
+        PermissionEngine::get_user_capabilities(self, context)
+    }
+
+    /// Check if user has specific role
+    pub fn has_role(&self, role: &ClientUserRole) -> bool {
+        self.roles.contains(role)
+    }
+
+    pub fn is_venue_verified(&self, venue_id: &str) -> bool {
+        self.verifications
+            .as_ref()
+            .map(|v|
+                v.venue_verifications
+                    .iter()
+                    .any(|vv| vv.venue_id == venue_id && vv.status == VerificationStatus::Active)
+            )
+            .unwrap_or(false)
+    }
+
+    /// Check if user is phone verified
+    pub fn is_phone_verified(&self) -> bool {
+        self.verifications
+            .as_ref()
+            .map(|v| v.phone_verified)
+            .unwrap_or(false)
+    }
+}
+
+impl UserVerifications {
+    /// Add client verification using email domain (for universities, companies)
+    pub fn add_client_email_verification(
+        &mut self,
+        client: &Client,
+        verified_email: String,
+        user_role: ClientUserRole
+    ) -> Result<(), String> {
+        // Extract domain from email
+        let email_domain = verified_email
+            .split('@')
+            .nth(1)
+            .ok_or("Invalid email format")?
+            .to_string();
+
+        // Validate against client's allowed domains
+        if let Some(client_auth) = &client.auth {
+            if let Some(allowed_domains) = &client_auth.allowed_email_domains {
+                if !allowed_domains.iter().any(|domain| email_domain.ends_with(domain)) {
+                    return Err("Email domain not allowed for this client".to_string());
+                }
+            }
+        }
+
+        let verification = ClientVerification {
+            client_id: client.id.clone().unwrap_or_default(),
+            client_name: client.name.clone(),
+            verification_method: ClientVerificationMethod::EmailDomain {
+                domain: format!("@{}", email_domain),
+                verified_email: verified_email.clone(),
+            },
+            verified_email: Some(verified_email),
+            token_used: None,
+            user_role,
+            verified_at: Utc::now(),
+            expires_at: None, // Client access typically doesn't expire
+            status: VerificationStatus::Active,
+        };
+
+        self.client_verifications.push(verification);
+        Ok(())
+    }
+
+    /// Add client verification using token
+    pub fn add_client_token_verification(
+        &mut self,
+        client: &Client,
+        provided_token: String,
+        user_role: ClientUserRole
+    ) -> Result<(), String> {
+        // Validate token against client's token
+        if let Some(client_auth) = &client.auth {
+            if let Some(client_token) = &client_auth.client_token {
+                if provided_token != *client_token {
+                    return Err("Invalid token for this client".to_string());
+                }
+            } else {
+                return Err("Client does not support token verification".to_string());
+            }
+        }
+
+        let verification = ClientVerification {
+            client_id: client.id.clone().unwrap_or_default(),
+            client_name: client.name.clone(),
+            verification_method: ClientVerificationMethod::ClientToken {
+                token: provided_token.clone(),
+            },
+            verified_email: None,
+            token_used: Some(provided_token),
+            user_role,
+            verified_at: Utc::now(),
+            expires_at: None,
+            status: VerificationStatus::Active,
+        };
+
+        self.client_verifications.push(verification);
+        Ok(())
+    }
+
+    /// Add venue-specific verification (for conferences, special events)
+    pub fn add_venue_specific_verification(
+        &mut self,
+        venue: &Venue,
+        method: VenueVerificationMethod,
+        expires_at: Option<DateTime<Utc>>
+    ) {
+        let verification = VenueVerification {
+            venue_id: venue.id.clone().unwrap_or_default(),
+            venue_name: venue.name.clone(),
+            client_id: venue.client_id.clone(),
+            venue_type: venue.venue_type.clone(),
+            verification_method: method,
+            verified_at: Utc::now(),
+            expires_at,
+            status: VerificationStatus::Active,
+        };
+
+        self.venue_verifications.push(verification);
+    }
+}
+
+// === Guard Implementations ===
+
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for GuardUser {
-    // Using your custom ApiError type for consistent error handling
     type Error = ApiError;
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        debug!("Attempting internal authentication for microservice request.");
+        debug!("Attempting user authentication for microservice request.");
 
-        // --- 1. Validate X-Internal-API-Key (Gateway's Secret) ---
+        // 1. Validate internal API key
         let expected_api_key = match env::var(INTERNAL_API_KEY) {
             Ok(key) => key,
             Err(e) => {
-                error!("INTERNAL_API_KEY environment variable not set in microservice: {}", e);
+                error!("INTERNAL_API_KEY environment variable not set: {}", e);
                 return Outcome::Error((
-                    Status::InternalServerError, // Misconfiguration error
+                    Status::InternalServerError,
                     ApiError::InternalServerError {
-                        message: "Microservice internal API key not configured.".to_string(),
+                        message: "Authentication service misconfigured.".to_string(),
                     },
                 ));
             }
         };
 
-        let provided_api_key: Option<&str> = request.headers().get_one("X-Internal-API-Key");
-
-        if provided_api_key.is_none() || provided_api_key.unwrap() != expected_api_key {
-            warn!("Invalid or missing X-Internal-API-Key from calling service. Request blocked.");
+        let provided_api_key = request.headers().get_one("X-Internal-API-Key");
+        if provided_api_key != Some(expected_api_key.as_str()) {
+            warn!("Invalid or missing X-Internal-API-Key");
             return Outcome::Error((
-                Status::Forbidden, // 403 Forbidden because these are internal endpoints not meant for public
-                ApiError::Unauthorized { // Use Unauthorized for failed access attempt
-                    message: "Unauthorized internal access. Invalid or missing internal API key.".to_string(),
+                Status::Forbidden,
+                ApiError::Unauthorized {
+                    message: "Unauthorized internal access.".to_string(),
                 },
             ));
         }
-        debug!("X-Internal-API-Key validated successfully.");
 
-        // --- 2. Extract Firebase UID and Phone Number from Headers ---
+        // 2. Extract required headers
         let firebase_user_id = match request.headers().get_one("X-Firebase-UID") {
             Some(uid) => uid.to_string(),
             None => {
-                error!("Missing X-Firebase-UID header from gateway.");
                 return Outcome::Error((
                     Status::BadRequest,
                     ApiError::BadRequest {
@@ -138,115 +504,80 @@ impl<'r> FromRequest<'r> for GuardUser {
             }
         };
 
-        let phone_number_str = match request.headers().get_one("X-Phone-Number") {
-            Some(phone) => phone.to_string(),
-            None => {
-                error!("Missing X-Phone-Number header from gateway.");
-                return Outcome::Error((
-                    Status::BadRequest,
-                    ApiError::BadRequest {
-                        message: "Missing X-Phone-Number header.".to_string(),
-                    },
-                ));
-            }
-        };
-
-        // --- 3. Extract City from Headers (Optional) ---
+        let phone_number_str = request
+            .headers()
+            .get_one("X-Phone-Number")
+            .map(|p| p.to_string());
         let city = request
             .headers()
             .get_one("X-City")
             .map(|c| c.to_string());
-        debug!("City from header: {:?}", city);
 
-        let parsed_phone_number_result: Result<PhoneNumber, ParseError> = phonenumber::parse(
-            None,
-            &phone_number_str
-        );
-
-        let parsed_phone_number: PhoneNumber = match parsed_phone_number_result {
-            Ok(pn) => pn,
-            Err(e) => {
-                warn!(
-                    "Failed to parse phone number '{}' from X-Phone-Number header: {:?}",
-                    phone_number_str,
-                    e
-                );
-                return Outcome::Error((
-                    Status::BadRequest,
-                    ApiError::BadRequest {
-                        message: format!("Invalid phone number format propagated by gateway: {e}"),
-                    },
-                ));
+        // 3. Parse country code from phone (if provided)
+        let country_code = if let Some(ref phone) = phone_number_str {
+            match phonenumber::parse(None, phone) {
+                Ok(parsed) => {
+                    if let Some(country) = parsed.country().id() {
+                        format!("{:?}", country)
+                    } else {
+                        return Outcome::Error((
+                            Status::BadRequest,
+                            ApiError::BadRequest {
+                                message: "Could not derive country from phone number.".to_string(),
+                            },
+                        ));
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to parse phone number: {}", e);
+                    return Outcome::Error((
+                        Status::BadRequest,
+                        ApiError::BadRequest {
+                            message: "Invalid phone number format.".to_string(),
+                        },
+                    ));
+                }
             }
+        } else {
+            "UNKNOWN".to_string()
         };
 
-        let country_id_option = parsed_phone_number.country().id();
-
-        let country_code = match country_id_option {
-            Some(country_id_enum_variant) => country_id_enum_variant,
-            None => {
-                warn!("Could not derive country code from phone number '{}'. Phone number might be invalid or incomplete for country inference.", phone_number_str);
-                return Outcome::Error((
-                    Status::BadRequest,
-                    ApiError::BadRequest {
-                        message: "Country code could not be derived from propagated phone number.".to_string(),
-                    },
-                ));
-            }
-        };
-        let country_code_alpha2 = format!("{country_code:?}");
-        debug!("Country code resolved from phone number: {}", country_code_alpha2);
-
-        // Get the HttpClient from Rocket's managed state
-        let http_client_guard = request.guard::<&rocket::State<Arc<reqwest::Client>>>().await;
-        let http_client = match http_client_guard {
+        // 4. Get user data from User Service
+        let http_client = match request.guard::<&rocket::State<Arc<reqwest::Client>>>().await {
             Outcome::Success(client) => client,
             _ => {
-                // Outcome::Failure or Outcome::Forward
-                error!(
-                    "HttpClient not found in Rocket state for auth guard. Service not properly initialized."
-                );
+                error!("HttpClient not available in Rocket state");
                 return Outcome::Error((
                     Status::InternalServerError,
                     ApiError::InternalServerError {
-                        message: "HttpClient dependency not available for authentication.".to_string(),
+                        message: "HTTP client not configured.".to_string(),
                     },
                 ));
             }
         };
 
-        // Get the UsersServiceUrl from Rocket's managed state
-        let user_service_url_guard = request.guard::<&rocket::State<UsersServiceUrl>>().await;
-        let user_service_url = match user_service_url_guard {
+        let user_service_url = match request.guard::<&rocket::State<UsersServiceUrl>>().await {
             Outcome::Success(url) => &url.0,
             _ => {
-                // Outcome::Failure or Outcome::Forward
-                error!(
-                    "UsersServiceUrl not found in Rocket state for auth guard. Service not properly initialized."
-                );
+                error!("UsersServiceUrl not available in Rocket state");
                 return Outcome::Error((
                     Status::InternalServerError,
                     ApiError::InternalServerError {
-                        message: "User Service URL not configured.".to_string(),
+                        message: "User service URL not configured.".to_string(),
                     },
                 ));
             }
         };
 
-        // Construct the User Service API call
-        let user_check_url = format!(
-            "{}/users/exists?firebase_user_id={}&country_code={}",
+        // 5. Call user service for authentication data
+        let auth_url = format!(
+            "{}/users/authenticate?firebase_user_id={}",
             user_service_url,
-            urlencoding::encode(&firebase_user_id),
-            urlencoding::encode(&country_code_alpha2)
+            urlencoding::encode(&firebase_user_id)
         );
 
-        debug!("Calling User Service to verify user existence: {}", user_check_url);
-        let user_service_response_raw = match
-            http_client
-                .get(&user_check_url)
-                .header("X-Internal-API-Key", &expected_api_key)
-                .send().await
+        let response = match
+            http_client.get(&auth_url).header("X-Internal-API-Key", &expected_api_key).send().await
         {
             Ok(resp) => resp,
             Err(e) => {
@@ -254,576 +585,237 @@ impl<'r> FromRequest<'r> for GuardUser {
                 return Outcome::Error((
                     Status::InternalServerError,
                     ApiError::InternalServerError {
-                        message: "User service unavailable or failed to respond.".to_string(),
+                        message: "User service unavailable.".to_string(),
                     },
                 ));
             }
         };
 
-        // Process User Service Response
-        if user_service_response_raw.status().is_success() {
-            let user_service_auth_data: UserServiceAuthResponse = match
-                user_service_response_raw.json().await
-            {
-                Ok(data) => data,
-                Err(e) => {
-                    error!("Failed to parse User Service response (expected UserServiceAuthResponse): {}", e);
-                    return Outcome::Error((
-                        Status::InternalServerError,
-                        ApiError::InternalServerError {
-                            message: "User service response parsing error.".to_string(),
-                        },
-                    ));
-                }
-            };
-
-            // Now, we have the user_id and roles from the User Service
-            info!(
-                "User authenticated successfully by microservice via User Service: User ID={}, Roles={:?}",
-                user_service_auth_data.user_id,
-                user_service_auth_data.roles
-            );
-
-            Outcome::Success(GuardUser {
-                user_id: user_service_auth_data.user_id, // Use ID from User Service
-                roles: user_service_auth_data.roles, // Use roles from User Service
-                country_code: country_code_alpha2,
-                firebase_user_id: Some(firebase_user_id),
-                phone_number: Some(phone_number_str),
-                current_client_id: user_service_auth_data.current_client_id,
-                current_venue_id: user_service_auth_data.current_venue_id,
-                major_id: user_service_auth_data.major_id,
-                area_of_interest_ids: user_service_auth_data.area_of_interest_ids,
-                default_language: user_service_auth_data.default_language,
-                current_venue_type: user_service_auth_data.current_venue_type,
-                industry_ids: user_service_auth_data.industry_ids,
-                city,
-            })
-        } else {
-            let status = user_service_response_raw.status();
-            let text = user_service_response_raw.text().await.unwrap_or_default();
-            error!("User Service returned an error status: Status={}, Body={}", status, text);
-            Outcome::Error((
-                Status::InternalServerError, // Treat User Service errors as internal issues
-                ApiError::InternalServerError {
-                    message: format!("User service returned an error: Status={status}"),
-                },
-            ))
-        }
-    }
-}
-
-// OpenAPI configuration for Bearer token (optional)
-impl<'a> OpenApiFromRequest<'a> for GuardUser {
-    fn from_request_input(
-        _gen: &mut OpenApiGenerator,
-        _name: String,
-        _required: bool
-    ) -> rocket_okapi::Result<RequestHeaderInput> {
-        // --- 1. Define Security Scheme for X-Internal-API-Key ---
-        // Give each header a unique internal security scheme name
-        let internal_api_key_scheme_name = "InternalApiKeyAuth";
-        let internal_api_key_scheme = SecurityScheme {
-            description: Some(
-                "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
-            ),
-            data: SecuritySchemeData::ApiKey {
-                name: "X-Internal-API-Key".to_owned(), // The actual header name
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
-        // --- 2. Define Security Scheme for X-Firebase-UID ---
-        let firebase_user_id_scheme_name = "FirebaseUidAuth";
-        let _firebase_user_id_scheme = SecurityScheme {
-            description: Some(
-                "Firebase User ID (UID) of the authenticated user, propagated by the API Gateway.".to_owned()
-            ),
-            data: SecuritySchemeData::ApiKey {
-                name: "X-Firebase-UID".to_owned(),
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
-        // --- 3. Define Security Scheme for X-Phone-Number ---
-        let phone_number_scheme_name = "PhoneNumberAuth";
-        let _phone_number_scheme = SecurityScheme {
-            description: Some(
-                "User's phone number in E.164 format (e.g., '+1234567890'), propagated by the API Gateway.".to_owned()
-            ),
-            data: SecuritySchemeData::ApiKey {
-                name: "X-Phone-Number".to_owned(),
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
-        // --- 4. Define Security Scheme for X-City ---
-        let city_scheme_name = "CityAuth";
-        let _city_scheme = SecurityScheme {
-            description: Some("User's city, propagated by the API Gateway (optional).".to_owned()),
-            data: SecuritySchemeData::ApiKey {
-                name: "X-City".to_owned(),
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
-        // --- Create a Security Requirement that lists ALL of these schemes ---
-        // This tells OpenAPI that all three headers are required.
-        let mut security_req = SecurityRequirement::new();
-        security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new()); // No scopes for API keys
-        security_req.insert(firebase_user_id_scheme_name.to_owned(), Vec::new());
-        security_req.insert(phone_number_scheme_name.to_owned(), Vec::new());
-        security_req.insert(city_scheme_name.to_owned(), Vec::new());
-
-        // --- Return RequestHeaderInput::Security ---
-        // You pass one of the schemes as the primary, and the combined requirement.
-        // Rocket-okapi's generator will combine all the schemes listed in security_req.
-        Ok(
-            RequestHeaderInput::Security(
-                // The "name" here is a logical name for this group of security schemes.
-                "InternalMicroserviceHeaders".to_owned(),
-                // Provide one of the schemes as the default for this input type.
-                internal_api_key_scheme,
-                // The actual requirement list
-                security_req
-            )
-        )
-    }
-}
-
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for GuardNewUser {
-    // Using your custom ApiError type for consistent error handling
-    type Error = ApiError;
-
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        debug!("Attempting internal authentication for microservice request.");
-
-        // --- 1. Validate X-Internal-API-Key (Gateway's Secret) ---
-        let expected_api_key = match env::var(INTERNAL_API_KEY) {
-            Ok(key) => key,
-            Err(e) => {
-                error!("INTERNAL_API_KEY environment variable not set in microservice: {}", e);
-                return Outcome::Error((
-                    Status::InternalServerError, // Misconfiguration error
-                    ApiError::InternalServerError {
-                        message: "Microservice internal API key not configured.".to_string(),
-                    },
-                ));
-            }
-        };
-
-        let provided_api_key: Option<&str> = request.headers().get_one("X-Internal-API-Key");
-
-        if provided_api_key.is_none() || provided_api_key.unwrap() != expected_api_key {
-            warn!("Invalid or missing X-Internal-API-Key from calling service. Request blocked.");
+        if !response.status().is_success() {
+            let status = response.status();
+            error!("User Service returned error: {}", status);
             return Outcome::Error((
-                Status::Forbidden, // 403 Forbidden because these are internal endpoints not meant for public
-                ApiError::Unauthorized { // Use Unauthorized for failed access attempt
-                    message: "Unauthorized internal access. Invalid or missing internal API key.".to_string(),
+                Status::InternalServerError,
+                ApiError::InternalServerError {
+                    message: format!("User authentication failed: {}", status),
                 },
             ));
         }
-        debug!("X-Internal-API-Key validated successfully.");
 
-        let phone_number_str = match request.headers().get_one("X-Phone-Number") {
-            Some(phone) => phone.to_string(),
-            None => {
-                error!("Missing X-Phone-Number header from gateway.");
+        let auth_data: UserServiceAuthResponse = match response.json().await {
+            Ok(data) => data,
+            Err(e) => {
+                error!("Failed to parse User Service response: {}", e);
                 return Outcome::Error((
-                    Status::BadRequest,
-                    ApiError::BadRequest {
-                        message: "Missing X-Phone-Number header.".to_string(),
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "Invalid user service response.".to_string(),
                     },
                 ));
             }
         };
 
-        let parsed_phone_number_result: Result<PhoneNumber, ParseError> = phonenumber::parse(
-            None,
-            &phone_number_str
+        // 6. Convert string roles to enum roles
+        let roles: HashSet<ClientUserRole> = auth_data.roles
+            .iter()
+            .filter_map(|role_str| {
+                match role_str.as_str() {
+                    // University roles
+                    "Student" => Some(ClientUserRole::Student),
+                    "UniversityStaff" => Some(ClientUserRole::Staff), // Changed from Admin
+                    "Alumni" => Some(ClientUserRole::Alumni),
+
+                    // Coffee shop roles
+                    "CoffeeShopAttendee" => Some(ClientUserRole::CoffeeShopAttendee),
+                    "CoffeeShopManager" => Some(ClientUserRole::CoffeeShopManager),
+
+                    // Coworking space roles
+                    "CoworkingSpaceAttendee" => Some(ClientUserRole::CoworkingSpaceAttendee),
+                    "CoworkingSpaceManager" => Some(ClientUserRole::CoworkingSpaceManager),
+
+                    // Conference roles
+                    "ConferenceAttendee" => Some(ClientUserRole::ConferenceAttendee),
+                    "ConferenceSpeaker" => Some(ClientUserRole::ConferenceSpeaker),
+
+                    // General roles
+                    "Guest" => Some(ClientUserRole::Guest),
+                    "Sponsor" => Some(ClientUserRole::Sponsor),
+                    "System" => Some(ClientUserRole::System),
+
+                    // Admin roles
+                    "Admin" => Some(ClientUserRole::Admin), // Bondinary admin
+                    "ClientAdmin" => Some(ClientUserRole::Admin), // Also maps to Admin (you may want to differentiate)
+
+                    _ => {
+                        warn!("Unknown role: {}", role_str);
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        info!(
+            "User authenticated: ID={}, State={:?}, Roles={:?}",
+            auth_data.user_id,
+            auth_data.user_state,
+            roles
         );
 
-        let parsed_phone_number: PhoneNumber = match parsed_phone_number_result {
-            Ok(pn) => pn,
-            Err(e) => {
-                warn!(
-                    "Failed to parse phone number '{}' from X-Phone-Number header: {:?}",
-                    phone_number_str,
-                    e
-                );
-                return Outcome::Error((
-                    Status::BadRequest,
-                    ApiError::BadRequest {
-                        message: format!("Invalid phone number format propagated by gateway: {e}"),
-                    },
-                ));
-            }
-        };
-
-        let country_id_option = parsed_phone_number.country().id();
-
-        let country_code = match country_id_option {
-            Some(country_id_enum_variant) => country_id_enum_variant,
-            None => {
-                warn!("Could not derive country code from phone number '{}'. Phone number might be invalid or incomplete for country inference.", phone_number_str);
-                return Outcome::Error((
-                    Status::BadRequest,
-                    ApiError::BadRequest {
-                        message: "Country code could not be derived from propagated phone number.".to_string(),
-                    },
-                ));
-            }
-        };
-        let country_code_alpha2 = format!("{country_code:?}");
-        debug!("Country code resolved from phone number: {}", country_code_alpha2);
-
-        Outcome::Success(GuardNewUser {
-            country_code: country_code_alpha2,
+        Outcome::Success(GuardUser {
+            user_id: auth_data.user_id,
+            firebase_user_id,
+            phone_number: phone_number_str,
+            country_code,
+            city,
+            user_state: Some(auth_data.user_state),
+            roles,
+            verifications: Some(auth_data.verifications),
         })
     }
 }
 
-// OpenAPI configuration for Bearer token (optional)
-impl<'a> OpenApiFromRequest<'a> for GuardNewUser {
-    fn from_request_input(
-        _gen: &mut OpenApiGenerator,
-        _name: String,
-        _required: bool
-    ) -> rocket_okapi::Result<RequestHeaderInput> {
-        // --- 1. Define Security Scheme for X-Internal-API-Key ---
-        // Give each header a unique internal security scheme name
-        let internal_api_key_scheme_name = "InternalApiKeyAuth";
-        let internal_api_key_scheme = SecurityScheme {
-            description: Some(
-                "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
-            ),
-            data: SecuritySchemeData::ApiKey {
-                name: "X-Internal-API-Key".to_owned(), // The actual header name
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
-        // --- 2. Define Security Scheme for X-Phone-Number ---
-        let phone_number_scheme_name = "PhoneNumberAuth";
-        let _phone_number_scheme = SecurityScheme {
-            description: Some(
-                "User's phone number in E.164 format (e.g., '+1234567890'), propagated by the API Gateway.".to_owned()
-            ),
-            data: SecuritySchemeData::ApiKey {
-                name: "X-Phone-Number".to_owned(),
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
-        // --- Create a Security Requirement that lists ALL of these schemes ---
-        // This tells OpenAPI that all three headers are required.
-        let mut security_req = SecurityRequirement::new();
-        security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new()); // No scopes for API keys
-        security_req.insert(phone_number_scheme_name.to_owned(), Vec::new());
-
-        // --- Return RequestHeaderInput::Security ---
-        // You pass one of the schemes as the primary, and the combined requirement.
-        // Rocket-okapi's generator will combine all the schemes listed in security_req.
-        Ok(
-            RequestHeaderInput::Security(
-                // The "name" here is a logical name for this group of security schemes.
-                "InternalMicroserviceHeaders".to_owned(),
-                // Provide one of the schemes as the default for this input type.
-                internal_api_key_scheme,
-                // The actual requirement list
-                security_req
-            )
-        )
-    }
-}
-
-// OpenAPI configuration for Bearer token (optional)
-impl<'a> OpenApiFromRequest<'a> for InternalApiKeyGuard {
-    fn from_request_input(
-        _gen: &mut OpenApiGenerator,
-        _name: String,
-        _required: bool
-    ) -> rocket_okapi::Result<RequestHeaderInput> {
-        // --- 1. Define Security Scheme for X-Internal-API-Key ---
-        // Give each header a unique internal security scheme name
-        let internal_api_key_scheme_name = "InternalApiKeyAuth";
-        let internal_api_key_scheme = SecurityScheme {
-            description: Some(
-                "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
-            ),
-            data: SecuritySchemeData::ApiKey {
-                name: "X-Internal-API-Key".to_owned(), // The actual header name
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
-        // --- Create a Security Requirement that lists ALL of these schemes ---
-        // This tells OpenAPI that all three headers are required.
-        let mut security_req = SecurityRequirement::new();
-        security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new()); // No scopes for API keys
-
-        // --- Return RequestHeaderInput::Security ---
-        // You pass one of the schemes as the primary, and the combined requirement.
-        // Rocket-okapi's generator will combine all the schemes listed in security_req.
-        Ok(
-            RequestHeaderInput::Security(
-                // The "name" here is a logical name for this group of security schemes.
-                "InternalMicroserviceHeaders".to_owned(),
-                // Provide one of the schemes as the default for this input type.
-                internal_api_key_scheme,
-                // The actual requirement list
-                security_req
-            )
-        )
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum GuardUserOrInternal {
-    User(GuardUser),
-    Internal(DummySystemUser),
-}
-
-#[derive(Debug, Clone)]
-pub struct DummySystemUser {
-    pub user_id: String,
-    pub roles: Vec<String>,
-}
-
-impl DummySystemUser {
-    pub fn new() -> Self {
-        Self {
-            user_id: "000000000000000000000000".to_string(),
-            roles: vec!["system".to_string()],
-        }
-    }
-}
+// === Anonymous Guard ===
 
 #[rocket::async_trait]
-impl<'r> FromRequest<'r> for GuardUserOrInternal {
+impl<'r> FromRequest<'r> for GuardAnonymous {
     type Error = ApiError;
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        debug!("GuardUserOrInternal: Checking authentication type");
+        debug!("Attempting anonymous authentication");
 
-        // Check if this looks like a user request (has Firebase UID)
-        let has_firebase_uid = request.headers().get_one("X-Firebase-UID").is_some();
-        let has_phone_number = request.headers().get_one("X-Phone-Number").is_some();
-
-        if has_firebase_uid && has_phone_number {
-            // This looks like a user request, validate full user authentication
-            debug!("GuardUserOrInternal: Detected user request, validating full authentication");
-
-            match GuardUser::from_request(request).await {
-                Outcome::Success(guard_user) => {
-                    debug!("GuardUserOrInternal: User authentication successful");
-                    Outcome::Success(GuardUserOrInternal::User(guard_user))
-                }
-                Outcome::Error((status, error)) => {
-                    debug!("GuardUserOrInternal: User authentication failed");
-                    Outcome::Error((status, error))
-                }
-                Outcome::Forward(forward) => Outcome::Forward(forward),
-            }
-        } else {
-            // No user headers, check for internal API key only
-            debug!("GuardUserOrInternal: No user headers detected, checking internal API key");
-
-            match InternalApiKeyGuard::from_request(request).await {
-                Outcome::Success(_) => {
-                    debug!("GuardUserOrInternal: Internal API key validation successful");
-                    Outcome::Success(GuardUserOrInternal::Internal(DummySystemUser::new()))
-                }
-                Outcome::Error((status, error)) => {
-                    debug!("GuardUserOrInternal: Internal API key validation failed");
-                    Outcome::Error((status, error))
-                }
-                Outcome::Forward(forward) => Outcome::Forward(forward),
-            }
-        }
-    }
-}
-
-impl GuardUserOrInternal {
-    /// Get user ID (works for both user and internal)
-    pub fn user_id(&self) -> &str {
-        match self {
-            GuardUserOrInternal::User(guard_user) => &guard_user.user_id,
-            GuardUserOrInternal::Internal(dummy_user) => &dummy_user.user_id,
-        }
-    }
-
-    /// Get country code (None for internal calls)
-    pub fn country_code(&self) -> Option<&str> {
-        match self {
-            GuardUserOrInternal::User(guard_user) => Some(&guard_user.country_code),
-            GuardUserOrInternal::Internal(_) => None,
-        }
-    }
-
-    /// Check if this is an internal call
-    pub fn is_internal(&self) -> bool {
-        matches!(self, GuardUserOrInternal::Internal(_))
-    }
-
-    /// Get GuardUser if this is a user call (for cases where you need full user context)
-    pub fn as_guard_user(&self) -> Option<&GuardUser> {
-        match self {
-            GuardUserOrInternal::User(guard_user) => Some(guard_user),
-            GuardUserOrInternal::Internal(_) => None,
-        }
-    }
-
-    /// Convert to a GuardUser for downstream calls (creates dummy user for internal)
-    pub fn to_guard_user_for_downstream(&self) -> GuardUser {
-        match self {
-            GuardUserOrInternal::User(guard_user) => guard_user.clone(),
-            GuardUserOrInternal::Internal(_) => {
-                // Create a minimal GuardUser for downstream service calls
-                GuardUser {
-                    user_id: "000000000000000000000000".to_string(),
-                    roles: vec![],
-                    country_code: "GLOBAL".to_string(), // Special marker
-                    firebase_user_id: None,
-                    phone_number: None,
-                    current_client_id: None,
-                    current_venue_id: None,
-                    major_id: None,
-                    area_of_interest_ids: None,
-                    default_language: None,
-                    current_venue_type: None,
-                    industry_ids: None,
-                    city: None,
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct GuardGuest {
-    pub firebase_user_id: String,
-    pub roles: Vec<String>, // Will contain ["Guest"]
-    pub city: Option<String>,
-}
-
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for GuardGuest {
-    type Error = ApiError;
-
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        debug!("Attempting guest authentication for microservice request.");
-
-        // --- 1. Validate X-Internal-API-Key (Gateway's Secret) ---
+        // 1. Validate internal API key
         let expected_api_key = match env::var(INTERNAL_API_KEY) {
             Ok(key) => key,
-            Err(e) => {
-                error!("INTERNAL_API_KEY environment variable not set in microservice: {}", e);
+            Err(_) => {
                 return Outcome::Error((
                     Status::InternalServerError,
                     ApiError::InternalServerError {
-                        message: "Microservice internal API key not configured.".to_string(),
+                        message: "Authentication service misconfigured.".to_string(),
                     },
                 ));
             }
         };
 
-        let provided_api_key: Option<&str> = request.headers().get_one("X-Internal-API-Key");
-
-        if provided_api_key.is_none() || provided_api_key.unwrap() != expected_api_key {
-            warn!("Invalid or missing X-Internal-API-Key from calling service. Request blocked.");
+        if request.headers().get_one("X-Internal-API-Key") != Some(expected_api_key.as_str()) {
             return Outcome::Error((
                 Status::Forbidden,
                 ApiError::Unauthorized {
-                    message: "Unauthorized internal access. Invalid or missing internal API key.".to_string(),
+                    message: "Unauthorized internal access.".to_string(),
                 },
             ));
         }
-        debug!("X-Internal-API-Key validated successfully.");
 
-        // --- 2. Extract Firebase UID from Headers (Required for Guest) ---
+        // 2. Extract Firebase UID (required for anonymous)
         let firebase_user_id = match request.headers().get_one("X-Firebase-UID") {
             Some(uid) => uid.to_string(),
             None => {
-                error!("Missing X-Firebase-UID header from gateway for guest user.");
                 return Outcome::Error((
                     Status::BadRequest,
                     ApiError::BadRequest {
-                        message: "Missing X-Firebase-UID header for guest authentication.".to_string(),
+                        message: "Missing X-Firebase-UID header.".to_string(),
                     },
                 ));
             }
         };
 
-        // --- 3. Extract City from Headers (Optional) ---
         let city = request
             .headers()
             .get_one("X-City")
             .map(|c| c.to_string());
-        debug!("Guest user city from header: {:?}", city);
 
-        debug!("Guest user authenticated with Firebase UID: {}", firebase_user_id);
-
-        Outcome::Success(GuardGuest {
+        Outcome::Success(GuardAnonymous {
             firebase_user_id,
-            roles: vec!["Guest".to_string()],
             city,
         })
     }
 }
 
-// OpenAPI configuration for GuardGuest
-impl<'a> OpenApiFromRequest<'a> for GuardGuest {
-    fn from_request_input(
-        _gen: &mut OpenApiGenerator,
-        _name: String,
-        _required: bool
-    ) -> rocket_okapi::Result<RequestHeaderInput> {
-        // --- 1. Define Security Scheme for X-Internal-API-Key ---
-        let internal_api_key_scheme_name = "InternalApiKeyAuth";
-        let internal_api_key_scheme = SecurityScheme {
-            description: Some(
-                "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
-            ),
-            data: SecuritySchemeData::ApiKey {
-                name: "X-Internal-API-Key".to_owned(),
-                location: "header".to_owned(),
+// === Flexible Guard Union ===
+
+#[derive(Debug, Clone)]
+pub enum GuardUserOrAnonymous {
+    User(GuardUser),
+    Anonymous(GuardAnonymous),
+}
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for GuardUserOrAnonymous {
+    type Error = ApiError;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        // Try user authentication first
+        if let Outcome::Success(user) = GuardUser::from_request(request).await {
+            return Outcome::Success(GuardUserOrAnonymous::User(user));
+        }
+
+        // Fall back to anonymous
+        if let Outcome::Success(anonymous) = GuardAnonymous::from_request(request).await {
+            return Outcome::Success(GuardUserOrAnonymous::Anonymous(anonymous));
+        }
+
+        // Both failed
+        Outcome::Error((
+            Status::Unauthorized,
+            ApiError::Unauthorized {
+                message: "Authentication required".to_string(),
             },
-            extensions: Object::default(),
+        ))
+    }
+}
+
+impl GuardUserOrAnonymous {
+    pub fn can_perform_action(&self, permission: &Permission, context: &ActionContext) -> bool {
+        match self {
+            GuardUserOrAnonymous::User(user) => user.can_perform_action(permission, context),
+            GuardUserOrAnonymous::Anonymous(_) => {
+                // Anonymous users can only view public content
+                matches!(permission, Permission::ViewPublicContent)
+            }
+        }
+    }
+
+    pub fn require_permission(
+        &self,
+        permission: &Permission,
+        context: &ActionContext
+    ) -> Result<(), ApiError> {
+        if !self.can_perform_action(permission, context) {
+            return Err(ApiError::Unauthorized {
+                message: format!("Permission {:?} required in context {:?}", permission, context),
+            });
+        }
+        Ok(())
+    }
+}
+
+// === Internal Guard ===
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for GuardInternal {
+    type Error = ApiError;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let expected_api_key = match env::var(INTERNAL_API_KEY) {
+            Ok(key) => key,
+            Err(_) => {
+                return Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "Internal API key not configured.".to_string(),
+                    },
+                ));
+            }
         };
 
-        // --- 2. Define Security Scheme for X-Firebase-UID ---
-        let firebase_user_id_scheme_name = "FirebaseUidAuth";
-        let _firebase_user_id_scheme = SecurityScheme {
-            description: Some(
-                "Firebase User ID (UID) of the guest user, propagated by the API Gateway.".to_owned()
-            ),
-            data: SecuritySchemeData::ApiKey {
-                name: "X-Firebase-UID".to_owned(),
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
+        if request.headers().get_one("X-Internal-API-Key") != Some(expected_api_key.as_str()) {
+            return Outcome::Error((
+                Status::Forbidden,
+                ApiError::Unauthorized {
+                    message: "Unauthorized internal access.".to_string(),
+                },
+            ));
+        }
 
-        // --- Create a Security Requirement ---
-        let mut security_req = SecurityRequirement::new();
-        security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new());
-        security_req.insert(firebase_user_id_scheme_name.to_owned(), Vec::new());
-
-        Ok(
-            RequestHeaderInput::Security(
-                "InternalMicroserviceHeaders".to_owned(),
-                internal_api_key_scheme,
-                security_req
-            )
-        )
+        Outcome::Success(GuardInternal)
     }
 }

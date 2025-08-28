@@ -244,11 +244,8 @@ impl AuthHelper {
     ) -> RequestBuilder {
         request_builder = request_builder.header("X-Internal-API-Key", internal_api_key);
 
-        if let Some(firebase_user_id) = &guard_user.firebase_user_id {
-            request_builder = request_builder.header("X-Firebase-UID", firebase_user_id);
-        } else {
-            warn!("add_auth_headers: X-Firebase-UID not available in GuardUser.");
-        }
+        let firebase_user_id = &guard_user.firebase_user_id;
+        request_builder = request_builder.header("X-Firebase-UID", firebase_user_id);
 
         if let Some(phone_number) = &guard_user.phone_number {
             request_builder = request_builder.header("X-Phone-Number", phone_number);
