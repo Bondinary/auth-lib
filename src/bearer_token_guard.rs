@@ -3,6 +3,9 @@ use common_lib::constants::INTERNAL_API_KEY;
 use common_lib::error::ApiError;
 use rocket::http::Status;
 use rocket::request::{ FromRequest, Outcome, Request };
+use rocket_okapi::r#gen::OpenApiGenerator;
+use rocket_okapi::okapi::openapi3::{Object, SecurityRequirement, SecurityScheme, SecuritySchemeData};
+use rocket_okapi::request::RequestHeaderInput;
 use serde::{ Deserialize, Serialize };
 use venues_service_domain::client_models::{ AuthType, Client, ClientAuth };
 use venues_service_domain::venue_models::{ Venue, VenueType };
@@ -12,6 +15,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 use tracing::{ debug, error, info, warn };
 use crate::permissions::{ ActionContext, Permission, PermissionEngine, UserServiceAuthResponse };
+use rocket_okapi::request::{ OpenApiFromRequest };
 
 // Struct to represent the BearerToken
 pub struct BearerToken(pub String);
@@ -36,6 +40,12 @@ pub struct GuardUser {
     pub user_state: Option<UserState>,
     pub roles: HashSet<ClientUserRole>,
     pub verifications: Option<UserVerifications>,
+}
+
+#[derive(Debug, Clone)]
+pub enum GuardUserOrAnonymous {
+    User(GuardUser),
+    Anonymous(GuardAnonymous),
 }
 
 #[derive(Debug, Clone)]
@@ -732,12 +742,6 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
 
 // === Flexible Guard Union ===
 
-#[derive(Debug, Clone)]
-pub enum GuardUserOrAnonymous {
-    User(GuardUser),
-    Anonymous(GuardAnonymous),
-}
-
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for GuardUserOrAnonymous {
     type Error = ApiError;
@@ -788,6 +792,96 @@ impl GuardUserOrAnonymous {
     }
 }
 
+// === New User Guard ===
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for GuardNewUser {
+    type Error = ApiError;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        debug!("Attempting new user authentication");
+
+        // 1. Validate internal API key
+        let expected_api_key = match env::var(INTERNAL_API_KEY) {
+            Ok(key) => key,
+            Err(_) => {
+                return Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "Authentication service misconfigured.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        if request.headers().get_one("X-Internal-API-Key") != Some(expected_api_key.as_str()) {
+            return Outcome::Error((
+                Status::Forbidden,
+                ApiError::Unauthorized {
+                    message: "Unauthorized internal access.".to_string(),
+                },
+            ));
+        }
+
+        // 2. Extract Firebase UID (required)
+        let firebase_user_id = match request.headers().get_one("X-Firebase-UID") {
+            Some(uid) => uid.to_string(),
+            None => {
+                return Outcome::Error((
+                    Status::BadRequest,
+                    ApiError::BadRequest {
+                        message: "Missing X-Firebase-UID header.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        // 3. Extract phone number (required for new user)
+        let phone_number = match request.headers().get_one("X-Phone-Number") {
+            Some(phone) => phone.to_string(),
+            None => {
+                return Outcome::Error((
+                    Status::BadRequest,
+                    ApiError::BadRequest {
+                        message: "Missing X-Phone-Number header.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        // 4. Parse country code from phone
+        let country_code = match phonenumber::parse(None, &phone_number) {
+            Ok(parsed) => {
+                if let Some(country) = parsed.country().id() {
+                    format!("{:?}", country)
+                } else {
+                    return Outcome::Error((
+                        Status::BadRequest,
+                        ApiError::BadRequest {
+                            message: "Could not derive country from phone number.".to_string(),
+                        },
+                    ));
+                }
+            }
+            Err(e) => {
+                warn!("Failed to parse phone number: {}", e);
+                return Outcome::Error((
+                    Status::BadRequest,
+                    ApiError::BadRequest {
+                        message: "Invalid phone number format.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        Outcome::Success(GuardNewUser {
+            firebase_user_id,
+            phone_number,
+            country_code,
+        })
+    }
+}
+
 // === Internal Guard ===
 
 #[rocket::async_trait]
@@ -817,5 +911,314 @@ impl<'r> FromRequest<'r> for GuardInternal {
         }
 
         Outcome::Success(GuardInternal)
+    }
+}
+
+
+// === OpenAPI Implementations ===
+
+// OpenAPI configuration for GuardUser
+impl<'a> OpenApiFromRequest<'a> for GuardUser {
+    fn from_request_input(
+        _gen: &mut OpenApiGenerator,
+        _name: String,
+        _required: bool,
+    ) -> rocket_okapi::Result<RequestHeaderInput> {
+        // --- 1. Define Security Scheme for X-Internal-API-Key ---
+        let internal_api_key_scheme_name = "InternalApiKeyAuth";
+        let internal_api_key_scheme = SecurityScheme {
+            description: Some(
+                "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-Internal-API-Key".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 2. Define Security Scheme for X-Firebase-UID ---
+        let firebase_user_id_scheme_name = "FirebaseUidAuth";
+        let _firebase_user_id_scheme = SecurityScheme {
+            description: Some(
+                "Firebase User ID (UID) of the authenticated user, propagated by the API Gateway.".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-Firebase-UID".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 3. Define Security Scheme for X-Phone-Number ---
+        let phone_number_scheme_name = "PhoneNumberAuth";
+        let _phone_number_scheme = SecurityScheme {
+            description: Some(
+                "User's phone number in E.164 format (e.g., '+1234567890'), propagated by the API Gateway (optional).".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-Phone-Number".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 4. Define Security Scheme for X-City ---
+        let city_scheme_name = "CityAuth";
+        let _city_scheme = SecurityScheme {
+            description: Some("User's city, propagated by the API Gateway (optional).".to_owned()),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-City".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- Create a Security Requirement that lists ALL of these schemes ---
+        let mut security_req = SecurityRequirement::new();
+        security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new());
+        security_req.insert(firebase_user_id_scheme_name.to_owned(), Vec::new());
+        security_req.insert(phone_number_scheme_name.to_owned(), Vec::new());
+        security_req.insert(city_scheme_name.to_owned(), Vec::new());
+
+        Ok(
+            RequestHeaderInput::Security(
+                "InternalMicroserviceHeaders".to_owned(),
+                internal_api_key_scheme,
+                security_req
+            )
+        )
+    }
+}
+
+// OpenAPI configuration for GuardAnonymous
+impl<'a> OpenApiFromRequest<'a> for GuardAnonymous {
+    fn from_request_input(
+        _gen: &mut OpenApiGenerator,
+        _name: String,
+        _required: bool,
+    ) -> rocket_okapi::Result<RequestHeaderInput> {
+        // --- 1. Define Security Scheme for X-Internal-API-Key ---
+        let internal_api_key_scheme_name = "InternalApiKeyAuth";
+        let internal_api_key_scheme = SecurityScheme {
+            description: Some(
+                "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-Internal-API-Key".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 2. Define Security Scheme for X-Firebase-UID ---
+        let firebase_user_id_scheme_name = "FirebaseUidAuth";
+        let _firebase_user_id_scheme = SecurityScheme {
+            description: Some(
+                "Firebase User ID (UID) of the anonymous user, propagated by the API Gateway.".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-Firebase-UID".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 3. Define Security Scheme for X-City ---
+        let city_scheme_name = "CityAuth";
+        let _city_scheme = SecurityScheme {
+            description: Some("User's city, propagated by the API Gateway (optional).".to_owned()),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-City".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- Create a Security Requirement ---
+        let mut security_req = SecurityRequirement::new();
+        security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new());
+        security_req.insert(firebase_user_id_scheme_name.to_owned(), Vec::new());
+        security_req.insert(city_scheme_name.to_owned(), Vec::new());
+
+        Ok(
+            RequestHeaderInput::Security(
+                "InternalMicroserviceHeaders".to_owned(),
+                internal_api_key_scheme,
+                security_req
+            )
+        )
+    }
+}
+
+// OpenAPI configuration for GuardUserOrAnonymous
+impl<'a> OpenApiFromRequest<'a> for GuardUserOrAnonymous {
+    fn from_request_input(
+        _gen: &mut OpenApiGenerator,
+        _name: String,
+        _required: bool,
+    ) -> rocket_okapi::Result<RequestHeaderInput> {
+        // This guard accepts either user or anonymous authentication
+        // We'll document it as the more complete user authentication scheme
+        
+        // --- 1. Define Security Scheme for X-Internal-API-Key ---
+        let internal_api_key_scheme_name = "InternalApiKeyAuth";
+        let internal_api_key_scheme = SecurityScheme {
+            description: Some(
+                "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-Internal-API-Key".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 2. Define Security Scheme for X-Firebase-UID ---
+        let firebase_user_id_scheme_name = "FirebaseUidAuth";
+        let _firebase_user_id_scheme = SecurityScheme {
+            description: Some(
+                "Firebase User ID (UID) - required for both authenticated and anonymous users.".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-Firebase-UID".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 3. Define Security Scheme for X-Phone-Number ---
+        let phone_number_scheme_name = "PhoneNumberAuth";
+        let _phone_number_scheme = SecurityScheme {
+            description: Some(
+                "User's phone number in E.164 format - optional, only for authenticated users.".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-Phone-Number".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 4. Define Security Scheme for X-City ---
+        let city_scheme_name = "CityAuth";
+        let _city_scheme = SecurityScheme {
+            description: Some("User's city, propagated by the API Gateway (optional).".to_owned()),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-City".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- Create a Security Requirement (only required headers) ---
+        let mut security_req = SecurityRequirement::new();
+        security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new());
+        security_req.insert(firebase_user_id_scheme_name.to_owned(), Vec::new());
+        // Note: Phone and City are optional, so we don't include them as required
+
+        Ok(
+            RequestHeaderInput::Security(
+                "FlexibleUserOrAnonymousAuth".to_owned(),
+                internal_api_key_scheme,
+                security_req
+            )
+        )
+    }
+}
+
+// OpenAPI configuration for GuardNewUser
+impl<'a> OpenApiFromRequest<'a> for GuardNewUser {
+    fn from_request_input(
+        _gen: &mut OpenApiGenerator,
+        _name: String,
+        _required: bool,
+    ) -> rocket_okapi::Result<RequestHeaderInput> {
+        // --- 1. Define Security Scheme for X-Internal-API-Key ---
+        let internal_api_key_scheme_name = "InternalApiKeyAuth";
+        let internal_api_key_scheme = SecurityScheme {
+            description: Some(
+                "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-Internal-API-Key".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 2. Define Security Scheme for X-Firebase-UID ---
+        let firebase_user_id_scheme_name = "FirebaseUidAuth";
+        let _firebase_user_id_scheme = SecurityScheme {
+            description: Some(
+                "Firebase User ID (UID) of the new user, propagated by the API Gateway.".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-Firebase-UID".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 3. Define Security Scheme for X-Phone-Number ---
+        let phone_number_scheme_name = "PhoneNumberAuth";
+        let _phone_number_scheme = SecurityScheme {
+            description: Some(
+                "User's phone number in E.164 format (e.g., '+1234567890'), required for new user registration.".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-Phone-Number".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- Create a Security Requirement ---
+        let mut security_req = SecurityRequirement::new();
+        security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new());
+        security_req.insert(firebase_user_id_scheme_name.to_owned(), Vec::new());
+        security_req.insert(phone_number_scheme_name.to_owned(), Vec::new());
+
+        Ok(
+            RequestHeaderInput::Security(
+                "NewUserRegistrationHeaders".to_owned(),
+                internal_api_key_scheme,
+                security_req
+            )
+        )
+    }
+}
+
+// OpenAPI configuration for GuardInternal
+impl<'a> OpenApiFromRequest<'a> for GuardInternal {
+    fn from_request_input(
+        _gen: &mut OpenApiGenerator,
+        _name: String,
+        _required: bool,
+    ) -> rocket_okapi::Result<RequestHeaderInput> {
+        // --- 1. Define Security Scheme for X-Internal-API-Key ---
+        let internal_api_key_scheme_name = "InternalApiKeyAuth";
+        let internal_api_key_scheme = SecurityScheme {
+            description: Some(
+                "Internal API key to authenticate internal service calls.".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: "X-Internal-API-Key".to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- Create a Security Requirement ---
+        let mut security_req = SecurityRequirement::new();
+        security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new());
+
+        Ok(
+            RequestHeaderInput::Security(
+                "InternalServiceAuth".to_owned(),
+                internal_api_key_scheme,
+                security_req
+            )
+        )
     }
 }
