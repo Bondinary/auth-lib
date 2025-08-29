@@ -1,5 +1,5 @@
 use chrono::{ DateTime, Utc };
-use common_lib::constants::INTERNAL_API_KEY;
+use common_lib::constants::{ INTERNAL_API_KEY, X_FIREBASE_UID, X_INTERNAL_API_KEY, X_PHONE_NUMBER };
 use common_lib::error::ApiError;
 use rocket::http::Status;
 use rocket::request::{ FromRequest, Outcome, Request };
@@ -511,7 +511,7 @@ impl<'r> FromRequest<'r> for GuardUser {
             }
         };
 
-        let provided_api_key = request.headers().get_one("X-Internal-API-Key");
+        let provided_api_key = request.headers().get_one(X_INTERNAL_API_KEY);
         if provided_api_key != Some(expected_api_key.as_str()) {
             warn!("Invalid or missing X-Internal-API-Key");
             return Outcome::Error((
@@ -523,7 +523,7 @@ impl<'r> FromRequest<'r> for GuardUser {
         }
 
         // 2. Extract required headers
-        let firebase_user_id = match request.headers().get_one("X-Firebase-UID") {
+        let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
             Some(uid) => uid.to_string(),
             None => {
                 return Outcome::Error((
@@ -537,7 +537,7 @@ impl<'r> FromRequest<'r> for GuardUser {
 
         let phone_number_str = request
             .headers()
-            .get_one("X-Phone-Number")
+            .get_one(X_PHONE_NUMBER)
             .map(|p| p.to_string());
         let city = request
             .headers()
@@ -608,7 +608,7 @@ impl<'r> FromRequest<'r> for GuardUser {
         );
 
         let response = match
-            http_client.get(&auth_url).header("X-Internal-API-Key", &expected_api_key).send().await
+            http_client.get(&auth_url).header(X_INTERNAL_API_KEY, &expected_api_key).send().await
         {
             Ok(resp) => resp,
             Err(e) => {
@@ -727,7 +727,7 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
             }
         };
 
-        if request.headers().get_one("X-Internal-API-Key") != Some(expected_api_key.as_str()) {
+        if request.headers().get_one(X_INTERNAL_API_KEY) != Some(expected_api_key.as_str()) {
             return Outcome::Error((
                 Status::Forbidden,
                 ApiError::Unauthorized {
@@ -737,7 +737,7 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
         }
 
         // 2. Extract Firebase UID (required for anonymous)
-        let firebase_user_id = match request.headers().get_one("X-Firebase-UID") {
+        let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
             Some(uid) => uid.to_string(),
             None => {
                 return Outcome::Error((
@@ -835,7 +835,7 @@ impl<'r> FromRequest<'r> for GuardNewUser {
             }
         };
 
-        if request.headers().get_one("X-Internal-API-Key") != Some(expected_api_key.as_str()) {
+        if request.headers().get_one(X_INTERNAL_API_KEY) != Some(expected_api_key.as_str()) {
             return Outcome::Error((
                 Status::Forbidden,
                 ApiError::Unauthorized {
@@ -845,7 +845,7 @@ impl<'r> FromRequest<'r> for GuardNewUser {
         }
 
         // 2. Extract Firebase UID (required)
-        let firebase_user_id = match request.headers().get_one("X-Firebase-UID") {
+        let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
             Some(uid) => uid.to_string(),
             None => {
                 return Outcome::Error((
@@ -858,7 +858,7 @@ impl<'r> FromRequest<'r> for GuardNewUser {
         };
 
         // 3. Extract phone number (required for new user)
-        let phone_number = match request.headers().get_one("X-Phone-Number") {
+        let phone_number = match request.headers().get_one(X_PHONE_NUMBER) {
             Some(phone) => phone.to_string(),
             None => {
                 return Outcome::Error((
@@ -922,7 +922,7 @@ impl<'r> FromRequest<'r> for GuardInternal {
             }
         };
 
-        if request.headers().get_one("X-Internal-API-Key") != Some(expected_api_key.as_str()) {
+        if request.headers().get_one(X_INTERNAL_API_KEY) != Some(expected_api_key.as_str()) {
             return Outcome::Error((
                 Status::Forbidden,
                 ApiError::Unauthorized {
@@ -951,7 +951,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardUser {
                 "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Internal-API-Key".to_owned(),
+                name: X_INTERNAL_API_KEY.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -964,7 +964,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardUser {
                 "Firebase User ID (UID) of the authenticated user, propagated by the API Gateway.".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Firebase-UID".to_owned(),
+                name: X_FIREBASE_UID.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -977,7 +977,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardUser {
                 "User's phone number in E.164 format (e.g., '+1234567890'), propagated by the API Gateway (optional).".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Phone-Number".to_owned(),
+                name: X_PHONE_NUMBER.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -1025,7 +1025,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardAnonymous {
                 "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Internal-API-Key".to_owned(),
+                name: X_INTERNAL_API_KEY.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -1038,7 +1038,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardAnonymous {
                 "Firebase User ID (UID) of the anonymous user, propagated by the API Gateway.".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Firebase-UID".to_owned(),
+                name: X_FIREBASE_UID.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -1088,7 +1088,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardUserOrAnonymous {
                 "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Internal-API-Key".to_owned(),
+                name: X_INTERNAL_API_KEY.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -1101,7 +1101,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardUserOrAnonymous {
                 "Firebase User ID (UID) - required for both authenticated and anonymous users.".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Firebase-UID".to_owned(),
+                name: X_FIREBASE_UID.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -1138,7 +1138,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardNewUser {
                 "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Internal-API-Key".to_owned(),
+                name: X_INTERNAL_API_KEY.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -1151,7 +1151,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardNewUser {
                 "Firebase User ID (UID) of the new user, propagated by the API Gateway.".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Firebase-UID".to_owned(),
+                name: X_FIREBASE_UID.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -1164,7 +1164,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardNewUser {
                 "User's phone number in E.164 format (e.g., '+1234567890'), required for new user registration.".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Phone-Number".to_owned(),
+                name: X_PHONE_NUMBER.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -1200,7 +1200,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardInternal {
                 "Internal API key to authenticate internal service calls.".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Internal-API-Key".to_owned(),
+                name: X_INTERNAL_API_KEY.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),

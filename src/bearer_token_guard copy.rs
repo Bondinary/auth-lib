@@ -248,7 +248,7 @@ impl<'r> FromRequest<'r> for InternalApiKeyGuard {
             })
             .expect("INTERNAL_API_KEY must be set"); // Or handle this gracefully.
 
-        let provided_api_key: Option<&str> = request.headers().get_one("X-Internal-API-Key");
+        let provided_api_key: Option<&str> = request.headers().get_one(X_INTERNAL_API_KEY);
 
         if provided_api_key.is_none() || provided_api_key.unwrap() != expected_api_key {
             warn!("Unauthorized internal access: Invalid or missing X-Internal-API-Key.");
@@ -284,7 +284,7 @@ impl<'r> FromRequest<'r> for GuardUser {
             }
         };
 
-        let provided_api_key: Option<&str> = request.headers().get_one("X-Internal-API-Key");
+        let provided_api_key: Option<&str> = request.headers().get_one(X_INTERNAL_API_KEY);
 
         if provided_api_key.is_none() || provided_api_key.unwrap() != expected_api_key {
             warn!("Invalid or missing X-Internal-API-Key from calling service. Request blocked.");
@@ -298,7 +298,7 @@ impl<'r> FromRequest<'r> for GuardUser {
         debug!("X-Internal-API-Key validated successfully.");
 
         // --- 2. Extract Firebase UID and Phone Number from Headers ---
-        let firebase_user_id = match request.headers().get_one("X-Firebase-UID") {
+        let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
             Some(uid) => uid.to_string(),
             None => {
                 error!("Missing X-Firebase-UID header from gateway.");
@@ -311,7 +311,7 @@ impl<'r> FromRequest<'r> for GuardUser {
             }
         };
 
-        let phone_number_str = match request.headers().get_one("X-Phone-Number") {
+        let phone_number_str = match request.headers().get_one(X_PHONE_NUMBER) {
             Some(phone) => phone.to_string(),
             None => {
                 error!("Missing X-Phone-Number header from gateway.");
@@ -418,7 +418,7 @@ impl<'r> FromRequest<'r> for GuardUser {
         let user_service_response_raw = match
             http_client
                 .get(&user_check_url)
-                .header("X-Internal-API-Key", &expected_api_key)
+                .header(X_INTERNAL_API_KEY, &expected_api_key)
                 .send().await
         {
             Ok(resp) => resp,
@@ -501,7 +501,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardUser {
                 "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Internal-API-Key".to_owned(), // The actual header name
+                name: X_INTERNAL_API_KEY.to_owned(), // The actual header name
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -514,7 +514,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardUser {
                 "Firebase User ID (UID) of the authenticated user, propagated by the API Gateway.".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Firebase-UID".to_owned(),
+                name: X_FIREBASE_UID.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -527,7 +527,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardUser {
                 "User's phone number in E.164 format (e.g., '+1234567890'), propagated by the API Gateway.".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Phone-Number".to_owned(),
+                name: X_PHONE_NUMBER.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -590,7 +590,7 @@ impl<'r> FromRequest<'r> for GuardNewUser {
             }
         };
 
-        let provided_api_key: Option<&str> = request.headers().get_one("X-Internal-API-Key");
+        let provided_api_key: Option<&str> = request.headers().get_one(X_INTERNAL_API_KEY);
 
         if provided_api_key.is_none() || provided_api_key.unwrap() != expected_api_key {
             warn!("Invalid or missing X-Internal-API-Key from calling service. Request blocked.");
@@ -603,7 +603,7 @@ impl<'r> FromRequest<'r> for GuardNewUser {
         }
         debug!("X-Internal-API-Key validated successfully.");
 
-        let phone_number_str = match request.headers().get_one("X-Phone-Number") {
+        let phone_number_str = match request.headers().get_one(X_PHONE_NUMBER) {
             Some(phone) => phone.to_string(),
             None => {
                 error!("Missing X-Phone-Number header from gateway.");
@@ -676,7 +676,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardNewUser {
                 "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Internal-API-Key".to_owned(), // The actual header name
+                name: X_INTERNAL_API_KEY.to_owned(), // The actual header name
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -689,7 +689,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardNewUser {
                 "User's phone number in E.164 format (e.g., '+1234567890'), propagated by the API Gateway.".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Phone-Number".to_owned(),
+                name: X_PHONE_NUMBER.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -732,7 +732,7 @@ impl<'a> OpenApiFromRequest<'a> for InternalApiKeyGuard {
                 "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Internal-API-Key".to_owned(), // The actual header name
+                name: X_INTERNAL_API_KEY.to_owned(), // The actual header name
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -788,8 +788,8 @@ impl<'r> FromRequest<'r> for GuardUserOrInternal {
         debug!("GuardUserOrInternal: Checking authentication type");
 
         // Check if this looks like a user request (has Firebase UID)
-        let has_firebase_uid = request.headers().get_one("X-Firebase-UID").is_some();
-        let has_phone_number = request.headers().get_one("X-Phone-Number").is_some();
+        let has_firebase_uid = request.headers().get_one(X_FIREBASE_UID).is_some();
+        let has_phone_number = request.headers().get_one(X_PHONE_NUMBER).is_some();
 
         if has_firebase_uid && has_phone_number {
             // This looks like a user request, validate full user authentication
@@ -909,7 +909,7 @@ impl<'r> FromRequest<'r> for GuardGuest {
             }
         };
 
-        let provided_api_key: Option<&str> = request.headers().get_one("X-Internal-API-Key");
+        let provided_api_key: Option<&str> = request.headers().get_one(X_INTERNAL_API_KEY);
 
         if provided_api_key.is_none() || provided_api_key.unwrap() != expected_api_key {
             warn!("Invalid or missing X-Internal-API-Key from calling service. Request blocked.");
@@ -923,7 +923,7 @@ impl<'r> FromRequest<'r> for GuardGuest {
         debug!("X-Internal-API-Key validated successfully.");
 
         // --- 2. Extract Firebase UID from Headers (Required for Guest) ---
-        let firebase_user_id = match request.headers().get_one("X-Firebase-UID") {
+        let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
             Some(uid) => uid.to_string(),
             None => {
                 error!("Missing X-Firebase-UID header from gateway for guest user.");
@@ -967,7 +967,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardGuest {
                 "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Internal-API-Key".to_owned(),
+                name: X_INTERNAL_API_KEY.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -980,7 +980,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardGuest {
                 "Firebase User ID (UID) of the guest user, propagated by the API Gateway.".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Firebase-UID".to_owned(),
+                name: X_FIREBASE_UID.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -1027,7 +1027,7 @@ impl<'r> FromRequest<'r> for GuardNewGuestUser {
             }
         };
 
-        let provided_api_key: Option<&str> = request.headers().get_one("X-Internal-API-Key");
+        let provided_api_key: Option<&str> = request.headers().get_one(X_INTERNAL_API_KEY);
 
         if provided_api_key.is_none() || provided_api_key.unwrap() != expected_api_key {
             warn!("Invalid or missing X-Internal-API-Key from calling service. Request blocked.");
@@ -1041,7 +1041,7 @@ impl<'r> FromRequest<'r> for GuardNewGuestUser {
         debug!("X-Internal-API-Key validated successfully.");
 
         // --- 2. Extract Firebase UID from Headers (Required for New Guest User) ---
-        let firebase_user_id = match request.headers().get_one("X-Firebase-UID") {
+        let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
             Some(uid) => uid.to_string(),
             None => {
                 error!("Missing X-Firebase-UID header from gateway for new guest user.");
@@ -1076,7 +1076,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardNewGuestUser {
                 "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Internal-API-Key".to_owned(),
+                name: X_INTERNAL_API_KEY.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -1089,7 +1089,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardNewGuestUser {
                 "Firebase User ID (UID) of the new guest user, propagated by the API Gateway.".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
-                name: "X-Firebase-UID".to_owned(),
+                name: X_FIREBASE_UID.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),

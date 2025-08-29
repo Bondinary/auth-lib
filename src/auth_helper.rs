@@ -1,9 +1,6 @@
 use base64::{ Engine as _, engine::general_purpose };
 use common_lib::constants::{
-    FIREBASE_CREDENTIALS_BASE64,
-    FIREBASE_PROJECT_ID,
-    GOOGLE_API_KEYS_URL,
-    LOCAL_FIREBASE_ACCOUNT_SERVICE_JSON_PATH,
+    FIREBASE_CREDENTIALS_BASE64, FIREBASE_PROJECT_ID, GOOGLE_API_KEYS_URL, LOCAL_FIREBASE_ACCOUNT_SERVICE_JSON_PATH, X_FIREBASE_UID, X_INTERNAL_API_KEY, X_PHONE_NUMBER
 };
 use common_lib::utils::get_env_var;
 use jsonwebtoken::{
@@ -242,18 +239,25 @@ impl AuthHelper {
         guard_user: &GuardUser, // Take GuardUser by reference
         internal_api_key: &str // Take internal API key by reference
     ) -> RequestBuilder {
-        request_builder = request_builder.header("X-Internal-API-Key", internal_api_key);
+        request_builder = request_builder.header(X_INTERNAL_API_KEY, internal_api_key);
 
         let firebase_user_id = &guard_user.firebase_user_id;
-        request_builder = request_builder.header("X-Firebase-UID", firebase_user_id);
+        request_builder = request_builder.header(X_FIREBASE_UID, firebase_user_id);
 
         if let Some(phone_number) = &guard_user.phone_number {
-            request_builder = request_builder.header("X-Phone-Number", phone_number);
+            request_builder = request_builder.header(X_PHONE_NUMBER, phone_number);
         } else {
             warn!("add_auth_headers: X-Phone-Number not available in GuardUser.");
         }
 
         request_builder
+    }
+
+    pub fn add_internal_auth_headers(
+        request_builder: RequestBuilder,
+        internal_api_key: &str
+    ) -> RequestBuilder {
+        request_builder.header(X_INTERNAL_API_KEY, internal_api_key)
     }
 
     pub async fn load_service_account_from_encoded_base64(
