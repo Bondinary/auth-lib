@@ -1,6 +1,12 @@
 use base64::{ Engine as _, engine::general_purpose };
 use common_lib::constants::{
-    FIREBASE_CREDENTIALS_BASE64, FIREBASE_PROJECT_ID, GOOGLE_API_KEYS_URL, LOCAL_FIREBASE_ACCOUNT_SERVICE_JSON_PATH, X_FIREBASE_UID, X_INTERNAL_API_KEY, X_PHONE_NUMBER
+    FIREBASE_CREDENTIALS_BASE64,
+    FIREBASE_PROJECT_ID,
+    GOOGLE_API_KEYS_URL,
+    LOCAL_FIREBASE_ACCOUNT_SERVICE_JSON_PATH,
+    X_FIREBASE_UID,
+    X_INTERNAL_API_KEY,
+    X_PHONE_NUMBER,
 };
 use common_lib::utils::get_env_var;
 use jsonwebtoken::{
@@ -264,7 +270,7 @@ impl AuthHelper {
         &self
     ) -> Result<FirebaseServiceAccount, Box<dyn Error + Send + Sync>> {
         // Try base64 environment variable first (for production/AWS deployment)
-        if let Ok(base64_credentials) = std::env::var(FIREBASE_CREDENTIALS_BASE64) {
+        if let Ok(base64_credentials) = get_env_var(FIREBASE_CREDENTIALS_BASE64, None) {
             debug!("Loading Firebase service account from base64 environment variable");
             // Decode base64 to get JSON string
             let decoded_bytes = general_purpose::STANDARD.decode(&base64_credentials).map_err(|e| {
@@ -305,8 +311,9 @@ impl AuthHelper {
 
         // Fallback to local file (for local development)
         if
-            let Ok(firebase_service_account_path) = std::env::var(
-                LOCAL_FIREBASE_ACCOUNT_SERVICE_JSON_PATH
+            let Ok(firebase_service_account_path) = get_env_var(
+                LOCAL_FIREBASE_ACCOUNT_SERVICE_JSON_PATH,
+                None
             )
         {
             debug!("Loading Firebase service account from local file: {}", firebase_service_account_path);

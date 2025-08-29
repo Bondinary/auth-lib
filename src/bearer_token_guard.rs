@@ -1,6 +1,7 @@
 use chrono::{ DateTime, Utc };
 use common_lib::constants::{ INTERNAL_API_KEY, X_FIREBASE_UID, X_INTERNAL_API_KEY, X_PHONE_NUMBER };
 use common_lib::error::ApiError;
+use common_lib::utils::get_env_var;
 use rocket::http::Status;
 use rocket::request::{ FromRequest, Outcome, Request };
 use rocket_okapi::r#gen::OpenApiGenerator;
@@ -16,7 +17,6 @@ use users_service_domain::users_models::UserRole;
 use venues_service_domain::client_models::{ AuthType, Client, ClientAuth };
 use venues_service_domain::venue_models::{ Venue, VenueType };
 use std::collections::HashSet;
-use std::env;
 use std::sync::{ Arc };
 use tracing::{ debug, error, info, warn };
 use crate::permissions::{ ActionContext, Permission, PermissionChecker, UserServiceAuthResponse };
@@ -498,7 +498,7 @@ impl<'r> FromRequest<'r> for GuardUser {
         debug!("Attempting user authentication for microservice request.");
 
         // 1. Validate internal API key
-        let expected_api_key = match env::var(INTERNAL_API_KEY) {
+        let expected_api_key = match get_env_var(INTERNAL_API_KEY, None) {
             Ok(key) => key,
             Err(e) => {
                 error!("INTERNAL_API_KEY environment variable not set: {}", e);
@@ -715,7 +715,7 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
         debug!("Attempting anonymous authentication");
 
         // 1. Validate internal API key
-        let expected_api_key = match env::var(INTERNAL_API_KEY) {
+        let expected_api_key = match get_env_var(INTERNAL_API_KEY, None) {
             Ok(key) => key,
             Err(_) => {
                 return Outcome::Error((
@@ -823,7 +823,7 @@ impl<'r> FromRequest<'r> for GuardNewUser {
         debug!("Attempting new user authentication");
 
         // 1. Validate internal API key
-        let expected_api_key = match env::var(INTERNAL_API_KEY) {
+        let expected_api_key = match get_env_var(INTERNAL_API_KEY, None) {
             Ok(key) => key,
             Err(_) => {
                 return Outcome::Error((
@@ -910,7 +910,7 @@ impl<'r> FromRequest<'r> for GuardInternal {
     type Error = ApiError;
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let expected_api_key = match env::var(INTERNAL_API_KEY) {
+        let expected_api_key = match get_env_var(INTERNAL_API_KEY, None) {
             Ok(key) => key,
             Err(_) => {
                 return Outcome::Error((

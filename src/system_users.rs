@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 
-use common_lib::constants::{
+use common_lib::{constants::{
     SYSTEM_USER_COUNTRY_CODE,
     SYSTEM_USER_FIREBASE_ID,
     SYSTEM_USER_ID,
     SYSTEM_USER_PHONE_NUMBER,
-};
+}, utils::get_env_var};
 
 use crate::bearer_token_guard::{ GuardUser, ClientUserRole };
 
@@ -19,21 +19,21 @@ pub struct SystemUserConfig {
 }
 
 impl SystemUserConfig {
-    pub fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
-        let country_code = std::env::var(SYSTEM_USER_COUNTRY_CODE)?;
-        let service_name = std::env::var("SERVICE_NAME").ok();
+    pub fn from_env() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let country_code = get_env_var(SYSTEM_USER_COUNTRY_CODE, None)?;
+        let service_name = get_env_var("SERVICE_NAME", None)?;
 
         // Generate contextual IDs
-        let firebase_user_id = Self::generate_firebase_id(&country_code, &service_name)?;
+        let firebase_user_id = Self::generate_firebase_id(&country_code, &Some(service_name.clone()))?;
         let phone_number = Self::get_country_phone_number(&country_code)?;
-        let user_id = Self::generate_user_id(&country_code, &service_name);
+        let user_id = Self::generate_user_id(&country_code, &Some(service_name.clone()));
 
         Ok(SystemUserConfig {
             user_id,
             firebase_user_id,
             phone_number,
             country_code,
-            service_name,
+            service_name: Some(service_name),
         })
     }
 
@@ -57,9 +57,9 @@ impl SystemUserConfig {
     fn generate_firebase_id(
         country_code: &str,
         service_name: &Option<String>
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         // Try explicit env var first
-        if let Ok(explicit_id) = std::env::var(SYSTEM_USER_FIREBASE_ID) {
+        if let Ok(explicit_id) = get_env_var(SYSTEM_USER_FIREBASE_ID, None) {
             return Ok(explicit_id);
         }
 
@@ -74,9 +74,9 @@ impl SystemUserConfig {
         Ok(firebase_id)
     }
 
-    fn get_country_phone_number(country_code: &str) -> Result<String, Box<dyn std::error::Error>> {
+    fn get_country_phone_number(country_code: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         // Try explicit env var first
-        if let Ok(explicit_phone) = std::env::var(SYSTEM_USER_PHONE_NUMBER) {
+        if let Ok(explicit_phone) = get_env_var(SYSTEM_USER_PHONE_NUMBER, None) {
             return Ok(explicit_phone);
         }
 
@@ -95,7 +95,7 @@ impl SystemUserConfig {
 
     fn generate_user_id(country_code: &str, service_name: &Option<String>) -> String {
         // Try explicit env var first
-        if let Ok(explicit_id) = std::env::var(SYSTEM_USER_ID) {
+        if let Ok(explicit_id) = get_env_var(SYSTEM_USER_ID, None) {
             return explicit_id;
         }
 
