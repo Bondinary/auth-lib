@@ -110,7 +110,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "auth-lib"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "base64 0.21.7",
  "chrono",
@@ -4114,9 +4114,9 @@ checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "users-service-domain"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48f3ae947dbc7f9ffa4bbeb4484d822f7944e8403d6f10c01841a2e5a98d418b"
+checksum = "c02e97cb34b04f99985c24a67a6216a08a83a57a10237668fc169f3b2eb53dbd"
 dependencies = [
  "chrono",
  "common-lib",

@@ -1,7 +1,6 @@
 use chrono::{ DateTime, Utc };
 use common_lib::constants::INTERNAL_API_KEY;
 use common_lib::error::ApiError;
-use once_cell::sync::Lazy;
 use rocket::http::Status;
 use rocket::request::{ FromRequest, Outcome, Request };
 use rocket_okapi::r#gen::OpenApiGenerator;
@@ -18,40 +17,10 @@ use venues_service_domain::client_models::{ AuthType, Client, ClientAuth };
 use venues_service_domain::venue_models::{ Venue, VenueType };
 use std::collections::HashSet;
 use std::env;
-use std::sync::{ Arc, RwLock };
+use std::sync::{ Arc };
 use tracing::{ debug, error, info, warn };
-use crate::permissions::{
-    ActionContext,
-    NoOpPermissionChecker,
-    Permission,
-    PermissionChecker,
-    UserServiceAuthResponse,
-};
+use crate::permissions::{ ActionContext, Permission, PermissionChecker, UserServiceAuthResponse };
 use rocket_okapi::request::{ OpenApiFromRequest };
-
-// Global permission checker that can be safely updated
-static PERMISSION_CHECKER: Lazy<RwLock<Option<Arc<dyn PermissionChecker>>>> = Lazy::new(|| {
-    RwLock::new(None)
-});
-
-/// Set the permission checker safely
-pub fn set_permission_checker(checker: Arc<dyn PermissionChecker>) {
-    let mut guard = PERMISSION_CHECKER.write().unwrap();
-    *guard = Some(checker);
-    info!("Permission checker updated successfully");
-}
-
-/// Get the current permission checker or return default
-fn get_permission_checker() -> Arc<dyn PermissionChecker> {
-    let guard = PERMISSION_CHECKER.read().unwrap();
-    match guard.as_ref() {
-        Some(checker) => checker.clone(),
-        None => {
-            warn!("No permission checker set, using default NoOp checker");
-            Arc::new(NoOpPermissionChecker)
-        }
-    }
-}
 
 // Struct to represent the BearerToken
 pub struct BearerToken(pub String);
@@ -328,18 +297,23 @@ impl GuardUser {
     }
 
     /// Check if user can perform action in specific context
-    pub fn can_perform_action(&self, permission: &Permission, context: &ActionContext) -> bool {
-        let checker = get_permission_checker();
+    pub fn can_perform_action_with_checker(
+        &self,
+        permission: &Permission,
+        context: &ActionContext,
+        checker: &dyn PermissionChecker
+    ) -> bool {
         checker.can_perform_action(self, permission, context)
     }
 
-    /// Require permission or return error
-    pub fn require_permission(
+    /// Require permission or return error using provided permission checker
+    pub fn require_permission_with_checker(
         &self,
         permission: &Permission,
-        context: &ActionContext
+        context: &ActionContext,
+        checker: &dyn PermissionChecker
     ) -> Result<(), ApiError> {
-        if !self.can_perform_action(permission, context) {
+        if !self.can_perform_action_with_checker(permission, context, checker) {
             return Err(ApiError::Unauthorized {
                 message: format!(
                     "User {} lacks permission {:?} in context {:?}. Current state: {:?}, roles: {:?}",
@@ -354,10 +328,38 @@ impl GuardUser {
         Ok(())
     }
 
-    /// Get user's current capabilities
-    pub fn get_capabilities(&self, context: &ActionContext) -> HashSet<Permission> {
-        let checker = get_permission_checker();
+    /// Get user's current capabilities using provided permission checker
+    pub fn get_capabilities_with_checker(
+        &self,
+        context: &ActionContext,
+        checker: &dyn PermissionChecker
+    ) -> HashSet<Permission> {
         checker.get_user_capabilities(self, context)
+    }
+
+    // Keep deprecated methods for backward compatibility but warn about usage
+    pub fn can_perform_action(&self, _permission: &Permission, _context: &ActionContext) -> bool {
+        warn!(
+            "Using deprecated can_perform_action without explicit checker. Use can_perform_action_with_checker instead."
+        );
+        false // Force explicit checker usage
+    }
+
+    pub fn require_permission(
+        &self,
+        _permission: &Permission,
+        _context: &ActionContext
+    ) -> Result<(), ApiError> {
+        Err(ApiError::Unauthorized {
+            message: "Permission checking requires explicit checker. Use require_permission_with_checker instead.".to_string(),
+        })
+    }
+
+    pub fn get_capabilities(&self, _context: &ActionContext) -> HashSet<Permission> {
+        warn!(
+            "Using deprecated get_capabilities without explicit checker. Use get_capabilities_with_checker instead."
+        );
+        HashSet::new()
     }
 
     /// Check if user has specific role
@@ -787,17 +789,22 @@ impl<'r> FromRequest<'r> for GuardUserOrAnonymous {
 }
 
 impl GuardUserOrAnonymous {
-    pub fn can_perform_action(&self, permission: &Permission, context: &ActionContext) -> bool {
-        let checker = get_permission_checker();
+    pub fn can_perform_action_with_checker(
+        &self,
+        permission: &Permission,
+        context: &ActionContext,
+        checker: &dyn PermissionChecker
+    ) -> bool {
         checker.can_perform_action_user_or_anonymous(self, permission, context)
     }
 
-    pub fn require_permission(
+    pub fn require_permission_with_checker(
         &self,
         permission: &Permission,
-        context: &ActionContext
+        context: &ActionContext,
+        checker: &dyn PermissionChecker
     ) -> Result<(), ApiError> {
-        if !self.can_perform_action(permission, context) {
+        if !self.can_perform_action_with_checker(permission, context, checker) {
             return Err(ApiError::Unauthorized {
                 message: format!("Permission {:?} required in context {:?}", permission, context),
             });
