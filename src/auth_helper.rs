@@ -33,7 +33,7 @@ use std::time::UNIX_EPOCH;
 use std::{ collections::{ HashMap, HashSet }, time::SystemTime };
 use tracing::{ debug, error, info, warn };
 
-use crate::bearer_token_guard::GuardUser;
+use crate::bearer_token_guard::{ GuardUserOrAnonymous };
 
 static KEYS: Lazy<Mutex<HashMap<String, Vec<u8>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -242,18 +242,33 @@ impl AuthHelper {
 
     pub fn add_auth_headers(
         mut request_builder: RequestBuilder,
-        guard_user: &GuardUser, // Take GuardUser by reference
+        guard_user_or_anonymous: &GuardUserOrAnonymous, // Take GuardUserOrAnonymous by reference
         internal_api_key: &str // Take internal API key by reference
     ) -> RequestBuilder {
         request_builder = request_builder.header(X_INTERNAL_API_KEY, internal_api_key);
 
-        let firebase_user_id = &guard_user.firebase_user_id;
-        request_builder = request_builder.header(X_FIREBASE_UID, firebase_user_id);
+        match guard_user_or_anonymous {
+            GuardUserOrAnonymous::User(guard_user) => {
+                // For authenticated users, add both Firebase UID and phone number
+                request_builder = request_builder.header(
+                    X_FIREBASE_UID,
+                    &guard_user.firebase_user_id
+                );
 
-        if let Some(phone_number) = &guard_user.phone_number {
-            request_builder = request_builder.header(X_PHONE_NUMBER, phone_number);
-        } else {
-            warn!("add_auth_headers: X-Phone-Number not available in GuardUser.");
+                if let Some(phone_number) = &guard_user.phone_number {
+                    request_builder = request_builder.header(X_PHONE_NUMBER, phone_number);
+                } else {
+                    warn!("add_auth_headers: X-Phone-Number not available in GuardUser.");
+                }
+            }
+            GuardUserOrAnonymous::Anonymous(guard_anonymous) => {
+                // For anonymous users, only add Firebase UID (no phone number)
+                request_builder = request_builder.header(
+                    X_FIREBASE_UID,
+                    &guard_anonymous.firebase_user_id
+                );
+                debug!("add_auth_headers: Anonymous user - Firebase UID added, no phone number");
+            }
         }
 
         request_builder
