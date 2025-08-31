@@ -812,7 +812,7 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
             "{}/users/exists?firebase_user_id={}&country_code={}",
             user_service_url,
             urlencoding::encode(&firebase_user_id),
-            urlencoding::encode(&country_code)
+            urlencoding::encode(&UNKNOWN.to_string())
         );
 
         let response = match
