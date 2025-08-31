@@ -1,13 +1,13 @@
 [package]
 name = "auth-lib"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2024"
 publish = ["bondinary-bondinary-rust-crates"]
 
 [dependencies]
 # common-lib = { path = "../common-lib" }
 common-lib = { version = "0.1.3" }
-venues-service-domain = { version = "0.1.1" }
+venues-service-domain = { version = "0.1.3" }
 users-service-domain = { version = "0.1.11" }
 
 chrono = "0.4"

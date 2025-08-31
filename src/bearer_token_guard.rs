@@ -31,6 +31,7 @@ pub struct UsersServiceUrl(pub String);
 
 #[derive(Debug, Clone)]
 pub struct GuardAnonymous {
+    pub user_id: String,
     pub firebase_user_id: String,
     pub city: Option<String>,
 }
@@ -749,12 +750,88 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
             }
         };
 
+        // 4. Get user data from User Service
+        let http_client = match request.guard::<&rocket::State<Arc<reqwest::Client>>>().await {
+            Outcome::Success(client) => client,
+            _ => {
+                error!("HttpClient not available in Rocket state");
+                return Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "HTTP client not configured.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        let user_service_url = match request.guard::<&rocket::State<UsersServiceUrl>>().await {
+            Outcome::Success(url) => &url.0,
+            _ => {
+                error!("UsersServiceUrl not available in Rocket state");
+                return Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "User service URL not configured.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        // 5. Call user service for authentication data
+        let auth_url = format!(
+            "{}/users/authenticate?firebase_user_id={}",
+            user_service_url,
+            urlencoding::encode(&firebase_user_id)
+        );
+
+        let response = match
+            http_client.get(&auth_url).header(X_INTERNAL_API_KEY, &expected_api_key).send().await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                error!("Failed to call User Service: {}", e);
+                return Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "User service unavailable.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        if !response.status().is_success() {
+            let status = response.status();
+            debug!("User Service returned error: {}", status);
+            return Outcome::Error((
+                Status::InternalServerError,
+                ApiError::InternalServerError {
+                    message: format!("User authentication failed: {}", status),
+                },
+            ));
+        }
+
+        let auth_data: UserServiceAuthResponse = match response.json().await {
+            Ok(data) => data,
+            Err(e) => {
+                error!("Failed to parse User Service response: {}", e);
+                return Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "Invalid user service response.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        
+
         let city = request
             .headers()
             .get_one("X-City")
             .map(|c| c.to_string());
 
         Outcome::Success(GuardAnonymous {
+            user_id: auth_data.user_id,
             firebase_user_id,
             city,
         })
