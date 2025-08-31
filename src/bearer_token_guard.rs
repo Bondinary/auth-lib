@@ -1,7 +1,16 @@
 use chrono::{ DateTime, Utc };
-use common_lib::constants::{ INTERNAL_API_KEY, X_FIREBASE_UID, X_INTERNAL_API_KEY, X_PHONE_NUMBER };
+use common_lib::constants::{
+    INTERNAL_API_KEY,
+    UNKNOWN,
+    X_CITY,
+    X_COUNTRY_CODE,
+    X_FIREBASE_UID,
+    X_INTERNAL_API_KEY,
+    X_PHONE_NUMBER,
+};
 use common_lib::error::ApiError;
 use common_lib::utils::get_env_var;
+use phonenumber::{ ParseError, PhoneNumber };
 use rocket::http::Status;
 use rocket::request::{ FromRequest, Outcome, Request };
 use rocket_okapi::r#gen::OpenApiGenerator;
@@ -52,13 +61,6 @@ pub struct GuardUser {
 pub enum GuardUserOrAnonymous {
     User(GuardUser),
     Anonymous(GuardAnonymous),
-}
-
-#[derive(Debug, Clone)]
-pub struct GuardNewUser {
-    pub firebase_user_id: String,
-    pub phone_number: String,
-    pub country_code: String,
 }
 
 #[derive(Debug, Clone)]
@@ -542,36 +544,56 @@ impl<'r> FromRequest<'r> for GuardUser {
             .map(|p| p.to_string());
         let city = request
             .headers()
-            .get_one("X-City")
+            .get_one(X_CITY)
             .map(|c| c.to_string());
 
         // 3. Parse country code from phone (if provided)
         let country_code = if let Some(ref phone) = phone_number_str {
-            match phonenumber::parse(None, phone) {
-                Ok(parsed) => {
-                    if let Some(country) = parsed.country().id() {
-                        format!("{:?}", country)
-                    } else {
-                        return Outcome::Error((
-                            Status::BadRequest,
-                            ApiError::BadRequest {
-                                message: "Could not derive country from phone number.".to_string(),
-                            },
-                        ));
-                    }
-                }
+            let parsed_phone_number_result: Result<PhoneNumber, ParseError> = phonenumber::parse(
+                None,
+                phone
+            );
+
+            let parsed_phone_number: PhoneNumber = match parsed_phone_number_result {
+                Ok(pn) => pn,
                 Err(e) => {
-                    warn!("Failed to parse phone number: {}", e);
+                    warn!(
+                        "Failed to parse phone number '{}' from X-Phone-Number header: {:?}",
+                        phone,
+                        e
+                    );
                     return Outcome::Error((
                         Status::BadRequest,
                         ApiError::BadRequest {
-                            message: "Invalid phone number format.".to_string(),
+                            message: format!(
+                                "Invalid phone number format propagated by gateway: {:?}",
+                                e
+                            ),
                         },
                     ));
                 }
-            }
+            };
+
+            let country_id_option = parsed_phone_number.country().id();
+
+            let country_id_enum = match country_id_option {
+                Some(country_id_enum_variant) => country_id_enum_variant,
+                None => {
+                    warn!("Could not derive country code from phone number '{}'. Phone number might be invalid or incomplete for country inference.", phone);
+                    return Outcome::Error((
+                        Status::BadRequest,
+                        ApiError::BadRequest {
+                            message: "Country code could not be derived from propagated phone number.".to_string(),
+                        },
+                    ));
+                }
+            };
+
+            let country_code_alpha2 = format!("{country_id_enum:?}");
+            debug!("Country code resolved from phone number: {}", country_code_alpha2);
+            country_code_alpha2
         } else {
-            "UNKNOWN".to_string()
+            UNKNOWN.to_string()
         };
 
         // 4. Get user data from User Service
@@ -603,9 +625,10 @@ impl<'r> FromRequest<'r> for GuardUser {
 
         // 5. Call user service for authentication data
         let auth_url = format!(
-            "{}/users/authenticate?firebase_user_id={}",
+            "{}/users/exists?firebase_user_id={}&country_code={}",
             user_service_url,
-            urlencoding::encode(&firebase_user_id)
+            urlencoding::encode(&firebase_user_id),
+            urlencoding::encode(&country_code)
         );
 
         let response = match
@@ -777,11 +800,18 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
             }
         };
 
+        let country_code = request
+            .headers()
+            .get_one(X_COUNTRY_CODE)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| UNKNOWN.to_string());
+
         // 5. Call user service for authentication data
         let auth_url = format!(
-            "{}/users/authenticate?firebase_user_id={}",
+            "{}/users/exists?firebase_user_id={}&country_code={}",
             user_service_url,
-            urlencoding::encode(&firebase_user_id)
+            urlencoding::encode(&firebase_user_id),
+            urlencoding::encode(&country_code)
         );
 
         let response = match
@@ -823,11 +853,9 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
             }
         };
 
-        
-
         let city = request
             .headers()
-            .get_one("X-City")
+            .get_one(X_CITY)
             .map(|c| c.to_string());
 
         Outcome::Success(GuardAnonymous {
@@ -887,96 +915,6 @@ impl GuardUserOrAnonymous {
             });
         }
         Ok(())
-    }
-}
-
-// === New User Guard ===
-
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for GuardNewUser {
-    type Error = ApiError;
-
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        debug!("Attempting new user authentication");
-
-        // 1. Validate internal API key
-        let expected_api_key = match get_env_var(INTERNAL_API_KEY, None) {
-            Ok(key) => key,
-            Err(_) => {
-                return Outcome::Error((
-                    Status::InternalServerError,
-                    ApiError::InternalServerError {
-                        message: "Authentication service misconfigured.".to_string(),
-                    },
-                ));
-            }
-        };
-
-        if request.headers().get_one(X_INTERNAL_API_KEY) != Some(expected_api_key.as_str()) {
-            return Outcome::Error((
-                Status::Forbidden,
-                ApiError::Unauthorized {
-                    message: "Unauthorized internal access.".to_string(),
-                },
-            ));
-        }
-
-        // 2. Extract Firebase UID (required)
-        let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
-            Some(uid) => uid.to_string(),
-            None => {
-                return Outcome::Error((
-                    Status::BadRequest,
-                    ApiError::BadRequest {
-                        message: "Missing X-Firebase-UID header.".to_string(),
-                    },
-                ));
-            }
-        };
-
-        // 3. Extract phone number (required for new user)
-        let phone_number = match request.headers().get_one(X_PHONE_NUMBER) {
-            Some(phone) => phone.to_string(),
-            None => {
-                return Outcome::Error((
-                    Status::BadRequest,
-                    ApiError::BadRequest {
-                        message: "Missing X-Phone-Number header.".to_string(),
-                    },
-                ));
-            }
-        };
-
-        // 4. Parse country code from phone
-        let country_code = match phonenumber::parse(None, &phone_number) {
-            Ok(parsed) => {
-                if let Some(country) = parsed.country().id() {
-                    format!("{:?}", country)
-                } else {
-                    return Outcome::Error((
-                        Status::BadRequest,
-                        ApiError::BadRequest {
-                            message: "Could not derive country from phone number.".to_string(),
-                        },
-                    ));
-                }
-            }
-            Err(e) => {
-                warn!("Failed to parse phone number: {}", e);
-                return Outcome::Error((
-                    Status::BadRequest,
-                    ApiError::BadRequest {
-                        message: "Invalid phone number format.".to_string(),
-                    },
-                ));
-            }
-        };
-
-        Outcome::Success(GuardNewUser {
-            firebase_user_id,
-            phone_number,
-            country_code,
-        })
     }
 }
 
@@ -1065,7 +1003,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardUser {
         let _city_scheme = SecurityScheme {
             description: Some("User's city, propagated by the API Gateway (optional).".to_owned()),
             data: SecuritySchemeData::ApiKey {
-                name: "X-City".to_owned(),
+                name: X_CITY.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -1126,7 +1064,7 @@ impl<'a> OpenApiFromRequest<'a> for GuardAnonymous {
         let _city_scheme = SecurityScheme {
             description: Some("User's city, propagated by the API Gateway (optional).".to_owned()),
             data: SecuritySchemeData::ApiKey {
-                name: "X-City".to_owned(),
+                name: X_CITY.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
@@ -1194,68 +1132,6 @@ impl<'a> OpenApiFromRequest<'a> for GuardUserOrAnonymous {
         Ok(
             RequestHeaderInput::Security(
                 "FlexibleUserOrAnonymousAuth".to_owned(),
-                internal_api_key_scheme,
-                security_req
-            )
-        )
-    }
-}
-
-// OpenAPI configuration for GuardNewUser
-impl<'a> OpenApiFromRequest<'a> for GuardNewUser {
-    fn from_request_input(
-        _gen: &mut OpenApiGenerator,
-        _name: String,
-        _required: bool
-    ) -> rocket_okapi::Result<RequestHeaderInput> {
-        // --- 1. Define Security Scheme for X-Internal-API-Key ---
-        let internal_api_key_scheme_name = "InternalApiKeyAuth";
-        let internal_api_key_scheme = SecurityScheme {
-            description: Some(
-                "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
-            ),
-            data: SecuritySchemeData::ApiKey {
-                name: X_INTERNAL_API_KEY.to_owned(),
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
-        // --- 2. Define Security Scheme for X-Firebase-UID ---
-        let firebase_user_id_scheme_name = "FirebaseUidAuth";
-        let _firebase_user_id_scheme = SecurityScheme {
-            description: Some(
-                "Firebase User ID (UID) of the new user, propagated by the API Gateway.".to_owned()
-            ),
-            data: SecuritySchemeData::ApiKey {
-                name: X_FIREBASE_UID.to_owned(),
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
-        // --- 3. Define Security Scheme for X-Phone-Number ---
-        let phone_number_scheme_name = "PhoneNumberAuth";
-        let _phone_number_scheme = SecurityScheme {
-            description: Some(
-                "User's phone number in E.164 format (e.g., '+1234567890'), required for new user registration.".to_owned()
-            ),
-            data: SecuritySchemeData::ApiKey {
-                name: X_PHONE_NUMBER.to_owned(),
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
-        // --- Create a Security Requirement ---
-        let mut security_req = SecurityRequirement::new();
-        security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new());
-        security_req.insert(firebase_user_id_scheme_name.to_owned(), Vec::new());
-        security_req.insert(phone_number_scheme_name.to_owned(), Vec::new());
-
-        Ok(
-            RequestHeaderInput::Security(
-                "NewUserRegistrationHeaders".to_owned(),
                 internal_api_key_scheme,
                 security_req
             )

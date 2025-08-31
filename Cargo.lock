@@ -751,9 +751,9 @@ dependencies = [
 
 [[package]]
 name = "common-lib"
-version = "0.1.3"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48e38cdd54b51fd88c5daadbb516b1ba67259f24f14ccecb08a0fca120995c5b"
+checksum = "421e7ddb6e1526e885c3816f9eae72c5c47d064a167dc3982b0f9cabc7414cfc"
 dependencies = [
  "aws-config",
  "aws-sdk-secretsmanager",
