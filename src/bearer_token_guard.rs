@@ -42,6 +42,7 @@ pub struct UsersServiceUrl(pub String);
 pub struct GuardAnonymous {
     pub user_id: String,
     pub firebase_user_id: String,
+    pub country_code: String,
     pub city: Option<String>,
 }
 
@@ -861,6 +862,7 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
         Outcome::Success(GuardAnonymous {
             user_id: auth_data.user_id,
             firebase_user_id,
+            country_code,
             city,
         })
     }
