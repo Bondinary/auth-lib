@@ -72,7 +72,7 @@ pub struct UserServiceAuthResponse {
     pub user_id: String,
     pub user_role: UserRole,
     pub roles: Vec<String>, // Convert to UserRole enum
-    pub verifications: UserVerifications,
+    pub verifications: Option<UserVerifications>,
 }
 
 // === Abstract Permission Checker Trait ===

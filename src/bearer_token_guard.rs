@@ -704,7 +704,7 @@ impl<'r> FromRequest<'r> for GuardUser {
             city,
             user_role: Some(auth_data.user_role),
             roles,
-            verifications: Some(auth_data.verifications),
+            verifications: auth_data.verifications,
         })
     }
 }
