@@ -68,6 +68,7 @@ pub enum GuardUserOrAnonymous {
 pub struct GuardAnonymousRegistration {
     pub firebase_user_id: String,
     pub country_code: String,
+    pub city: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1158,6 +1159,8 @@ impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
     type Error = ApiError;
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        debug!("Attempting anonymous registration authentication");
+
         // 1. Validate internal API key
         let expected_api_key = match get_env_var(INTERNAL_API_KEY, None) {
             Ok(key) => key,
@@ -1198,12 +1201,101 @@ impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
             .headers()
             .get_one(X_COUNTRY_CODE)
             .map(|c| c.to_string())
-            .unwrap_or_else(|| UNKNOWN.to_string());
+            .unwrap_or_else(|| {
+                debug!("No X-Country-Code header found, using UNKNOWN for anonymous registration");
+                UNKNOWN.to_string()
+            });
 
-        // ✅ No database lookup - just validate headers
+        // 4. Extract city (optional)
+        let city = request
+            .headers()
+            .get_one(X_CITY)
+            .map(|c| c.to_string());
+
+        debug!(
+            "Anonymous registration guard created: firebase_user_id={}, country_code={}, city={:?}",
+            firebase_user_id,
+            country_code,
+            city
+        );
+
+        // ✅ No database lookup - just validate headers for registration
         Outcome::Success(GuardAnonymousRegistration {
             firebase_user_id,
             country_code,
+            city,
         })
+    }
+}
+
+// ✅ Add this OpenAPI implementation after the other OpenAPI implementations
+impl<'a> OpenApiFromRequest<'a> for GuardAnonymousRegistration {
+    fn from_request_input(
+        _gen: &mut OpenApiGenerator,
+        _name: String,
+        _required: bool
+    ) -> rocket_okapi::Result<RequestHeaderInput> {
+        // --- 1. Define Security Scheme for X-Internal-API-Key ---
+        let internal_api_key_scheme_name = "InternalApiKeyAuth";
+        let internal_api_key_scheme = SecurityScheme {
+            description: Some(
+                "Internal API key to authenticate the calling service for anonymous user registration.".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: X_INTERNAL_API_KEY.to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 2. Define Security Scheme for X-Firebase-UID ---
+        let firebase_user_id_scheme_name = "FirebaseUidAuth";
+        let _firebase_user_id_scheme = SecurityScheme {
+            description: Some(
+                "Firebase User ID (UID) of the anonymous user to be registered.".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: X_FIREBASE_UID.to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 3. Define Security Scheme for X-Country-Code ---
+        let _country_code_scheme_name = "CountryCodeAuth";
+        let _country_code_scheme = SecurityScheme {
+            description: Some(
+                "Country code for anonymous registration (optional, defaults to 'UNKNOWN').".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: X_COUNTRY_CODE.to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 4. Define Security Scheme for X-City ---
+        let _city_scheme_name = "CityAuth";
+        let _city_scheme = SecurityScheme {
+            description: Some("User's city for anonymous registration (optional).".to_owned()),
+            data: SecuritySchemeData::ApiKey {
+                name: X_CITY.to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- Create a Security Requirement (only required headers) ---
+        let mut security_req = SecurityRequirement::new();
+        security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new());
+        security_req.insert(firebase_user_id_scheme_name.to_owned(), Vec::new());
+
+        Ok(
+            RequestHeaderInput::Security(
+                "AnonymousRegistrationAuth".to_owned(),
+                internal_api_key_scheme,
+                security_req
+            )
+        )
     }
 }
