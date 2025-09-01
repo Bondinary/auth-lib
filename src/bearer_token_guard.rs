@@ -23,7 +23,7 @@ use rocket_okapi::okapi::openapi3::{
 use rocket_okapi::request::RequestHeaderInput;
 use serde::{ Deserialize, Serialize };
 use users_service_domain::users_models::UserRole;
-use venues_service_domain::client_models::{ AuthType, Client, ClientAuth };
+use venues_service_domain::client_models::{ AuthType, Client, ClientAuth, ClientUserRole };
 use venues_service_domain::venue_models::{ Venue, VenueType };
 use std::collections::HashSet;
 use std::sync::{ Arc };
@@ -62,6 +62,12 @@ pub struct GuardUser {
 pub enum GuardUserOrAnonymous {
     User(GuardUser),
     Anonymous(GuardAnonymous),
+}
+
+#[derive(Debug, Clone)]
+pub struct GuardAnonymousRegistration {
+    pub firebase_user_id: String,
+    pub country_code: String,
 }
 
 #[derive(Debug, Clone)]
@@ -133,34 +139,6 @@ pub enum VenueVerificationMethod {
         qr_data: String,
     },
     ProximityBasedCheckin, // Location-based check-in
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ClientUserRole {
-    // Bondinary admin
-    Admin,
-
-    // University roles
-    Student,
-    Staff,
-    Alumni,
-
-    // Coffee shop roles
-    CoffeeShopAttendee,
-    CoffeeShopManager,
-
-    // Coworking space roles
-    CoworkingSpaceAttendee,
-    CoworkingSpaceManager,
-
-    // Conference roles
-    ConferenceAttendee,
-    ConferenceSpeaker,
-
-    // General roles
-    Guest,
-    Sponsor,
-    System,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1172,5 +1150,60 @@ impl<'a> OpenApiFromRequest<'a> for GuardInternal {
                 security_req
             )
         )
+    }
+}
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
+    type Error = ApiError;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        // 1. Validate internal API key
+        let expected_api_key = match get_env_var(INTERNAL_API_KEY, None) {
+            Ok(key) => key,
+            Err(_) => {
+                return Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "Authentication service misconfigured.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        if request.headers().get_one(X_INTERNAL_API_KEY) != Some(expected_api_key.as_str()) {
+            return Outcome::Error((
+                Status::Forbidden,
+                ApiError::Unauthorized {
+                    message: "Unauthorized internal access.".to_string(),
+                },
+            ));
+        }
+
+        // 2. Extract Firebase UID (required)
+        let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
+            Some(uid) => uid.to_string(),
+            None => {
+                return Outcome::Error((
+                    Status::BadRequest,
+                    ApiError::BadRequest {
+                        message: "Missing X-Firebase-UID header.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        // 3. Get country code or default to UNKNOWN
+        let country_code = request
+            .headers()
+            .get_one(X_COUNTRY_CODE)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| UNKNOWN.to_string());
+
+        // ✅ No database lookup - just validate headers
+        Outcome::Success(GuardAnonymousRegistration {
+            firebase_user_id,
+            country_code,
+        })
     }
 }

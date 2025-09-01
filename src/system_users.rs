@@ -1,13 +1,17 @@
 use std::collections::HashSet;
 
-use common_lib::{constants::{
-    SYSTEM_USER_COUNTRY_CODE,
-    SYSTEM_USER_FIREBASE_ID,
-    SYSTEM_USER_ID,
-    SYSTEM_USER_PHONE_NUMBER,
-}, utils::get_env_var};
+use common_lib::{
+    constants::{
+        SYSTEM_USER_COUNTRY_CODE,
+        SYSTEM_USER_FIREBASE_ID,
+        SYSTEM_USER_ID,
+        SYSTEM_USER_PHONE_NUMBER,
+    },
+    utils::get_env_var,
+};
+use venues_service_domain::client_models::ClientUserRole;
 
-use crate::bearer_token_guard::{ GuardUser, ClientUserRole };
+use crate::bearer_token_guard::{ GuardUser };
 
 #[derive(Debug, Clone)]
 pub struct SystemUserConfig {
@@ -24,7 +28,10 @@ impl SystemUserConfig {
         let service_name = get_env_var("SERVICE_NAME", None)?;
 
         // Generate contextual IDs
-        let firebase_user_id = Self::generate_firebase_id(&country_code, &Some(service_name.clone()))?;
+        let firebase_user_id = Self::generate_firebase_id(
+            &country_code,
+            &Some(service_name.clone())
+        )?;
         let phone_number = Self::get_country_phone_number(&country_code)?;
         let user_id = Self::generate_user_id(&country_code, &Some(service_name.clone()));
 
@@ -74,7 +81,9 @@ impl SystemUserConfig {
         Ok(firebase_id)
     }
 
-    fn get_country_phone_number(country_code: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    fn get_country_phone_number(
+        country_code: &str
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         // Try explicit env var first
         if let Ok(explicit_phone) = get_env_var(SYSTEM_USER_PHONE_NUMBER, None) {
             return Ok(explicit_phone);
