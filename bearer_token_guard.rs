@@ -1,3 +1,6 @@
+use backend_domain::UserRole;
+use backend_domain::{Venue, VenueType};
+use backend_domain::{AuthType, Client, ClientAuth, ClientUserRole};
 use chrono::{ DateTime, Utc };
 use common_lib::constants::{
     INTERNAL_API_KEY,
@@ -22,13 +25,11 @@ use rocket_okapi::okapi::openapi3::{
 };
 use rocket_okapi::request::RequestHeaderInput;
 use serde::{ Deserialize, Serialize };
-use users_service_domain::users_models::UserRole;
-use venues_service_domain::client_models::{ AuthType, Client, ClientAuth, ClientUserRole };
-use venues_service_domain::venue_models::{ Venue, VenueType };
 use std::collections::HashSet;
 use std::sync::{ Arc };
 use tracing::{ debug, error, info, warn };
-use crate::permissions::{ ActionContext, Permission, PermissionChecker, UserServiceAuthResponse };
+use crate::common_lib;
+use crate::auth_lib::permissions::{ ActionContext, Permission, PermissionChecker, UserServiceAuthResponse };
 use rocket_okapi::request::{ OpenApiFromRequest };
 
 // Struct to represent the BearerToken

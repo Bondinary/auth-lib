@@ -1,8 +1,8 @@
 use std::collections::HashSet;
+use backend_domain::{users::users_models::UserRole, venues::venue_models::VenueType};
 use serde::{ Deserialize, Serialize };
-use users_service_domain::{ users_models::UserRole };
-use venues_service_domain::venue_models::VenueType;
-use crate::bearer_token_guard::{ GuardUser, GuardUserOrAnonymous, UserVerifications };
+
+use crate::auth_lib::bearer_token_guard::{GuardUser, GuardUserOrAnonymous, UserVerifications};
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Eq, Hash)]
 pub enum Permission {

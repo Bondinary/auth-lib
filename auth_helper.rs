@@ -32,8 +32,7 @@ use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 use std::{ collections::{ HashMap, HashSet }, time::SystemTime };
 use tracing::{ debug, error, info, warn };
-
-use crate::bearer_token_guard::{ GuardUser, GuardUserOrAnonymous };
+use crate::{common_lib, GuardUser, GuardUserOrAnonymous};
 
 static KEYS: Lazy<Mutex<HashMap<String, Vec<u8>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 

@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-
+use backend_domain::ClientUserRole;
 use common_lib::{
     constants::{
         SYSTEM_USER_COUNTRY_CODE,
@@ -9,9 +9,7 @@ use common_lib::{
     },
     utils::get_env_var,
 };
-use venues_service_domain::client_models::ClientUserRole;
-
-use crate::bearer_token_guard::{ GuardUser };
+use crate::{auth_lib::bearer_token_guard::GuardUser, common_lib};
 
 #[derive(Debug, Clone)]
 pub struct SystemUserConfig {
