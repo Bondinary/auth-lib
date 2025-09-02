@@ -1220,7 +1220,7 @@ impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
             city
         );
 
-        // ✅ No database lookup - just validate headers for registration
+        // No database lookup - just validate headers for registration
         Outcome::Success(GuardAnonymousRegistration {
             firebase_user_id,
             country_code,
@@ -1229,7 +1229,7 @@ impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
     }
 }
 
-// ✅ Add this OpenAPI implementation after the other OpenAPI implementations
+// Add this OpenAPI implementation after the other OpenAPI implementations
 impl<'a> OpenApiFromRequest<'a> for GuardAnonymousRegistration {
     fn from_request_input(
         _gen: &mut OpenApiGenerator,
