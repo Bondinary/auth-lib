@@ -1,6 +1,6 @@
 use backend_domain::UserRole;
-use backend_domain::{Venue, VenueType};
-use backend_domain::{AuthType, Client, ClientAuth, ClientUserRole};
+use backend_domain::{ Venue, VenueType };
+use backend_domain::{ AuthType, Client, ClientAuth, ClientUserRole };
 use chrono::{ DateTime, Utc };
 use common_lib::constants::{
     INTERNAL_API_KEY,
@@ -29,7 +29,12 @@ use std::collections::HashSet;
 use std::sync::{ Arc };
 use tracing::{ debug, error, info, warn };
 use crate::common_lib;
-use crate::auth_lib::permissions::{ ActionContext, Permission, PermissionChecker, UserServiceAuthResponse };
+use crate::auth_lib::permissions::{
+    ActionContext,
+    Permission,
+    PermissionChecker,
+    UserServiceAuthResponse,
+};
 use rocket_okapi::request::{ OpenApiFromRequest };
 
 // Struct to represent the BearerToken
@@ -627,86 +632,132 @@ impl<'r> FromRequest<'r> for GuardUser {
             }
         };
 
-        if !response.status().is_success() {
-            let status = response.status();
-            debug!("User Service returned error: {}", status);
-            return Outcome::Error((
-                Status::InternalServerError,
-                ApiError::InternalServerError {
-                    message: format!("User authentication failed: {}", status),
-                },
-            ));
-        }
+        // 6. Handle different response statuses
+        match response.status().as_u16() {
+            200 => {
+                // User exists and is registered - continue with normal flow
+                let auth_data: UserServiceAuthResponse = match response.json().await {
+                    Ok(data) => data,
+                    Err(e) => {
+                        error!("Failed to parse User Service response: {}", e);
+                        return Outcome::Error((
+                            Status::InternalServerError,
+                            ApiError::InternalServerError {
+                                message: "Invalid user service response.".to_string(),
+                            },
+                        ));
+                    }
+                };
 
-        let auth_data: UserServiceAuthResponse = match response.json().await {
-            Ok(data) => data,
-            Err(e) => {
-                error!("Failed to parse User Service response: {}", e);
-                return Outcome::Error((
+                // Check if this is an anonymous user trying to access registered-only endpoint
+                if auth_data.user_role == UserRole::Anonymous {
+                    // Extract the endpoint path to provide context
+                    let endpoint_path = request.uri().path().to_string();
+                    let action_description = Self::get_action_description(&endpoint_path);
+
+                    info!(
+                        "Anonymous user {} attempted to access registered-only endpoint: {}",
+                        auth_data.user_id,
+                        endpoint_path
+                    );
+
+                    return Outcome::Error((
+                        Status::PreconditionRequired, // 428
+                        ApiError::registration_required(&action_description),
+                    ));
+                }
+
+                // Convert string roles to enum roles
+                let roles: HashSet<ClientUserRole> = auth_data.roles
+                    .iter()
+                    .filter_map(|role_str| {
+                        match role_str.as_str() {
+                            // University roles
+                            "Student" => Some(ClientUserRole::Student),
+                            "UniversityStaff" => Some(ClientUserRole::Staff),
+                            "Alumni" => Some(ClientUserRole::Alumni),
+                            // Coffee shop roles
+                            "CoffeeShopAttendee" => Some(ClientUserRole::CoffeeShopAttendee),
+                            "CoffeeShopManager" => Some(ClientUserRole::CoffeeShopManager),
+                            // Coworking space roles
+                            "CoworkingSpaceAttendee" =>
+                                Some(ClientUserRole::CoworkingSpaceAttendee),
+                            "CoworkingSpaceManager" => Some(ClientUserRole::CoworkingSpaceManager),
+                            // Conference roles
+                            "ConferenceAttendee" => Some(ClientUserRole::ConferenceAttendee),
+                            "ConferenceSpeaker" => Some(ClientUserRole::ConferenceSpeaker),
+                            // General roles
+                            "Guest" => Some(ClientUserRole::Guest),
+                            "Sponsor" => Some(ClientUserRole::Sponsor),
+                            "System" => Some(ClientUserRole::System),
+                            "Admin" => Some(ClientUserRole::Admin),
+                            "ClientAdmin" => Some(ClientUserRole::Admin),
+                            _ => {
+                                warn!("Unknown role: {}", role_str);
+                                None
+                            }
+                        }
+                    })
+                    .collect();
+
+                info!(
+                    "User authenticated: ID={}, State={:?}, Roles={:?}",
+                    auth_data.user_id,
+                    auth_data.user_role,
+                    roles
+                );
+
+                Outcome::Success(GuardUser {
+                    user_id: auth_data.user_id,
+                    firebase_user_id,
+                    phone_number: phone_number_str,
+                    country_code,
+                    city,
+                    user_role: Some(auth_data.user_role),
+                    roles,
+                    verifications: auth_data.verifications,
+                })
+            }
+            404 => {
+                // User not found - they need to register
+                let endpoint_path = request.uri().path().to_string();
+                let action_description = Self::get_action_description(&endpoint_path);
+
+                info!(
+                    "Unregistered user with firebase_id {} attempted to access endpoint: {}",
+                    firebase_user_id,
+                    endpoint_path
+                );
+
+                Outcome::Error((
+                    Status::PreconditionRequired, // 428
+                    ApiError::registration_required(&action_description),
+                ))
+            }
+            status_code => {
+                error!("User Service returned error: {}", status_code);
+                Outcome::Error((
                     Status::InternalServerError,
                     ApiError::InternalServerError {
-                        message: "Invalid user service response.".to_string(),
+                        message: format!("User authentication failed: {}", status_code),
                     },
-                ));
+                ))
             }
-        };
+        }
+    }
+}
 
-        // 6. Convert string roles to enum roles
-        let roles: HashSet<ClientUserRole> = auth_data.roles
-            .iter()
-            .filter_map(|role_str| {
-                match role_str.as_str() {
-                    // University roles
-                    "Student" => Some(ClientUserRole::Student),
-                    "UniversityStaff" => Some(ClientUserRole::Staff), // Changed from Admin
-                    "Alumni" => Some(ClientUserRole::Alumni),
-
-                    // Coffee shop roles
-                    "CoffeeShopAttendee" => Some(ClientUserRole::CoffeeShopAttendee),
-                    "CoffeeShopManager" => Some(ClientUserRole::CoffeeShopManager),
-
-                    // Coworking space roles
-                    "CoworkingSpaceAttendee" => Some(ClientUserRole::CoworkingSpaceAttendee),
-                    "CoworkingSpaceManager" => Some(ClientUserRole::CoworkingSpaceManager),
-
-                    // Conference roles
-                    "ConferenceAttendee" => Some(ClientUserRole::ConferenceAttendee),
-                    "ConferenceSpeaker" => Some(ClientUserRole::ConferenceSpeaker),
-
-                    // General roles
-                    "Guest" => Some(ClientUserRole::Guest),
-                    "Sponsor" => Some(ClientUserRole::Sponsor),
-                    "System" => Some(ClientUserRole::System),
-
-                    // Admin roles
-                    "Admin" => Some(ClientUserRole::Admin), // Bondinary admin
-                    "ClientAdmin" => Some(ClientUserRole::Admin), // Also maps to Admin (you may want to differentiate)
-
-                    _ => {
-                        warn!("Unknown role: {}", role_str);
-                        None
-                    }
-                }
-            })
-            .collect();
-
-        info!(
-            "User authenticated: ID={}, State={:?}, Roles={:?}",
-            auth_data.user_id,
-            auth_data.user_role,
-            roles
-        );
-
-        Outcome::Success(GuardUser {
-            user_id: auth_data.user_id,
-            firebase_user_id,
-            phone_number: phone_number_str,
-            country_code,
-            city,
-            user_role: Some(auth_data.user_role),
-            roles,
-            verifications: auth_data.verifications,
-        })
+impl GuardUser {
+    /// Extract action description from endpoint path for better user messaging
+    fn get_action_description(endpoint_path: &str) -> String {
+        match endpoint_path {
+            path if path.contains("comments") => "add comments".to_string(),
+            path if path.contains("private-sparks") => "create or manage sparks".to_string(),
+            path if path.contains("users/update") => "update your profile".to_string(),
+            path if path.contains("users/my-profile") => "view your profile".to_string(),
+            path if path.contains("qr-code") => "generate QR codes".to_string(),
+            _ => "perform this action".to_string(),
+        }
     }
 }
 
