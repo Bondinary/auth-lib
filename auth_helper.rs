@@ -32,7 +32,7 @@ use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 use std::{ collections::{ HashMap, HashSet }, time::SystemTime };
 use tracing::{ debug, error, info, warn };
-use crate::{common_lib, GuardUser, GuardUserOrAnonymous};
+use crate::{ common_lib, GuardUser, GuardUserOrAnonymous };
 
 static KEYS: Lazy<Mutex<HashMap<String, Vec<u8>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -132,18 +132,8 @@ impl AuthHelper {
     pub async fn load_service_account(
         &self
     ) -> Result<FirebaseServiceAccount, Box<dyn Error + Send + Sync>> {
-        let firebase_service_account_path = get_env_var(
-            LOCAL_FIREBASE_ACCOUNT_SERVICE_JSON_PATH,
-            None
-        )?;
-
-        // Load service account credentials for making authorized requests
-        let mut file = File::open(firebase_service_account_path)?;
-        let mut contents = String::new();
-        std::io::Read::read_to_string(&mut file, &mut contents)?;
-
-        let service_account: FirebaseServiceAccount = serde_json::from_str(&contents)?;
-        Ok(service_account)
+        // Use the base64 environment variable approach instead of file-based approach
+        self.load_service_account_from_encoded_base64().await
     }
 
     pub async fn create_custom_token(
@@ -158,6 +148,7 @@ impl AuthHelper {
             iss: service_account.client_email.clone(),
             sub: service_account.client_email.clone(),
             aud: "https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit".to_string(),
+            scope: None, // This method doesn't need OAuth2 scope
             iat,
             exp,
             uid: Some(email.to_string().clone()),
@@ -171,7 +162,16 @@ impl AuthHelper {
     }
 
     pub async fn get_oauth2_access_token(&self) -> Result<String, Box<dyn Error + Send + Sync>> {
-        let service_account = self.load_service_account().await?;
+        let service_account = self.load_service_account().await.map_err(|e| {
+            error!("Failed to load Firebase service account for OAuth2 token: {}", e);
+            Box::new(
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Firebase service account loading failed: {}", e)
+                )
+            ) as Box<dyn Error + Send + Sync>
+        })?;
+
         let iat = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as usize;
         let exp = iat + 3600; // Token valid for 1 hour
 
@@ -179,14 +179,22 @@ impl AuthHelper {
             iss: service_account.client_email.clone(),
             sub: service_account.client_email.clone(),
             aud: "https://oauth2.googleapis.com/token".to_string(),
+            scope: Some("https://www.googleapis.com/auth/firebase.messaging".to_string()),
             iat,
             exp,
             uid: None,
             phone_number: String::new(),
         };
 
-        let key = EncodingKey::from_rsa_pem(service_account.private_key.as_bytes())?;
-        let jwt = encode(&Header::new(Algorithm::RS256), &claims, &key)?;
+        let key = EncodingKey::from_rsa_pem(service_account.private_key.as_bytes()).map_err(|e| {
+            error!("Failed to create RSA encoding key from service account private key: {}", e);
+            Box::new(e) as Box<dyn Error + Send + Sync>
+        })?;
+
+        let jwt = encode(&Header::new(Algorithm::RS256), &claims, &key).map_err(|e| {
+            error!("Failed to encode JWT for OAuth2 request: {}", e);
+            Box::new(e) as Box<dyn Error + Send + Sync>
+        })?;
 
         let client = Client::new();
         let response = client
@@ -197,15 +205,68 @@ impl AuthHelper {
                     ("assertion", &jwt),
                 ]
             )
-            .send().await?;
+            .send().await
+            .map_err(|e| {
+                error!("Failed to send OAuth2 token request to Google: {}", e);
+                Box::new(e) as Box<dyn Error + Send + Sync>
+            })?;
 
-        let token_response: serde_json::Value = response.json().await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            error!("OAuth2 token request failed with status {}: {}", status, error_text);
+            return Err(
+                Box::new(
+                    std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("OAuth2 token request failed: {} - {}", status, error_text)
+                    )
+                ) as Box<dyn Error + Send + Sync>
+            );
+        }
+
+        let token_response: serde_json::Value = response.json().await.map_err(|e| {
+            error!("Failed to parse OAuth2 token response as JSON: {}", e);
+            Box::new(e) as Box<dyn Error + Send + Sync>
+        })?;
+
         let access_token = token_response["access_token"]
             .as_str()
-            .ok_or("Failed to get access token")?
+            .ok_or_else(|| {
+                error!("OAuth2 response missing 'access_token' field: {:?}", token_response);
+                Box::new(
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "OAuth2 response missing access_token field"
+                    )
+                ) as Box<dyn Error + Send + Sync>
+            })?
             .to_string();
 
+        debug!("Successfully obtained OAuth2 access token");
         Ok(access_token)
+    }
+
+    /// Check if Firebase credentials are properly configured without failing
+    pub async fn is_firebase_configured(&self) -> bool {
+        match get_env_var(FIREBASE_CREDENTIALS_BASE64, None) {
+            Ok(credentials) => !credentials.trim().is_empty(),
+            Err(_) => false,
+        }
+    }
+
+    /// Test Firebase OAuth2 token generation (useful for debugging)
+    pub async fn test_firebase_oauth2(&self) -> Result<bool, Box<dyn Error + Send + Sync>> {
+        match self.get_oauth2_access_token().await {
+            Ok(token) => {
+                info!("Firebase OAuth2 test successful, token length: {}", token.len());
+                Ok(true)
+            }
+            Err(e) => {
+                error!("Firebase OAuth2 test failed: {}", e);
+                Ok(false)
+            }
+        }
     }
 
     pub async fn get_firebase_admin_access_token(
@@ -399,6 +460,7 @@ pub struct Claims {
     pub iat: usize,
     pub iss: String,
     pub sub: String,
+    pub scope: Option<String>,
     pub uid: Option<String>,
     pub phone_number: String,
 }
