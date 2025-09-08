@@ -62,6 +62,7 @@ pub struct GuardUser {
     pub user_role: Option<UserRole>,
     pub roles: HashSet<ClientUserRole>,
     pub verifications: Option<UserVerifications>,
+    pub data_region: String, // User's data region (EU, US, APAC) for MongoDB shard targeting
 }
 
 #[derive(Debug, Clone)]
@@ -707,6 +708,9 @@ impl<'r> FromRequest<'r> for GuardUser {
                     roles
                 );
 
+                // 🚀 GLOBAL CLUSTER: Extract user's data region with fallback to US
+                let data_region = auth_data.data_region.unwrap_or_else(|| "US".to_string());
+
                 Outcome::Success(GuardUser {
                     user_id: auth_data.user_id,
                     firebase_user_id,
@@ -716,6 +720,7 @@ impl<'r> FromRequest<'r> for GuardUser {
                     user_role: Some(auth_data.user_role),
                     roles,
                     verifications: auth_data.verifications,
+                    data_region, // 🚀 User region for MongoDB shard targeting
                 })
             }
             404 => {

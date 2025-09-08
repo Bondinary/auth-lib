@@ -1,8 +1,8 @@
 use std::collections::HashSet;
-use backend_domain::{users::users_models::UserRole, venues::venue_models::VenueType};
+use backend_domain::{ users::users_models::UserRole, venues::venue_models::VenueType };
 use serde::{ Deserialize, Serialize };
 
-use crate::auth_lib::bearer_token_guard::{GuardUser, GuardUserOrAnonymous, UserVerifications};
+use crate::auth_lib::bearer_token_guard::{ GuardUser, GuardUserOrAnonymous, UserVerifications };
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Eq, Hash)]
 pub enum Permission {
@@ -73,6 +73,7 @@ pub struct UserServiceAuthResponse {
     pub user_role: UserRole,
     pub roles: Vec<String>, // Convert to UserRole enum
     pub verifications: Option<UserVerifications>,
+    pub data_region: Option<String>, // User's data region (EU, US, APAC) - fallback to US if None
 }
 
 // === Abstract Permission Checker Trait ===

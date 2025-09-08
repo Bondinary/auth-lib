@@ -9,7 +9,7 @@ use common_lib::{
     },
     utils::get_env_var,
 };
-use crate::{auth_lib::bearer_token_guard::GuardUser, common_lib};
+use crate::{ auth_lib::bearer_token_guard::GuardUser, common_lib };
 
 #[derive(Debug, Clone)]
 pub struct SystemUserConfig {
@@ -56,6 +56,7 @@ impl SystemUserConfig {
             city: None,
             user_role: None,
             verifications: None,
+            data_region: "US".to_string(), // Default to US for system users
         }
     }
 
