@@ -83,7 +83,7 @@ pub struct GuardInternal;
 
 // === Verification System ===
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UserVerifications {
     pub phone_verified: bool,
     pub phone_verified_at: Option<DateTime<Utc>>,
@@ -95,7 +95,7 @@ pub struct UserVerifications {
     pub venue_verifications: Vec<VenueVerification>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClientVerification {
     pub client_id: String, // References Client.id from your venues service
     pub client_name: String, // University name, Company name, etc.
@@ -108,7 +108,7 @@ pub struct ClientVerification {
     pub status: VerificationStatus,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VenueVerification {
     pub venue_id: String, // References Venue.id
     pub venue_name: String,
@@ -865,6 +865,8 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
                 ));
             }
         };
+
+        // 6. Handle different response statuses
 
         if !response.status().is_success() {
             let status = response.status();

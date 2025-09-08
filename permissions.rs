@@ -66,7 +66,7 @@ pub enum ActionContext {
 }
 
 // User Service Response structure
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserServiceAuthResponse {
     pub user_id: String,
