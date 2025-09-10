@@ -49,13 +49,8 @@ use serde::{ Deserialize, Serialize };
 use std::collections::HashSet;
 use std::sync::{ Arc };
 use tracing::{ debug, error, info, warn };
-use crate::common_lib;
-use crate::auth_lib::permissions::{
-    ActionContext,
-    Permission,
-    PermissionChecker,
-    UserServiceAuthResponse,
-};
+use crate::{ common_lib, UserExistsResponse };
+use crate::auth_lib::permissions::{ ActionContext, Permission, PermissionChecker };
 use rocket_okapi::request::{ OpenApiFromRequest };
 
 // ============================================================================
@@ -159,7 +154,7 @@ async fn call_user_service(
     http_client: &reqwest::Client,
     auth_url: &str,
     api_key: &str
-) -> Result<UserServiceAuthResponse, ApiError> {
+) -> Result<UserExistsResponse, ApiError> {
     let response = http_client
         .get(auth_url)
         .header(X_INTERNAL_API_KEY, api_key)
@@ -846,7 +841,7 @@ impl<'r> FromRequest<'r> for GuardUser {
             city,
             user_role: Some(auth_data.user_role),
             roles,
-            verifications: auth_data.verifications,
+            verifications: None,
         })
     }
 }

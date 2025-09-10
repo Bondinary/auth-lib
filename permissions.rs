@@ -1,8 +1,8 @@
 use std::collections::HashSet;
-use backend_domain::{ users::users_models::UserRole, venues::venue_models::VenueType };
+use backend_domain::{ venues::venue_models::VenueType };
 use serde::{ Deserialize, Serialize };
 
-use crate::auth_lib::bearer_token_guard::{ GuardUser, GuardUserOrAnonymous, UserVerifications };
+use crate::auth_lib::bearer_token_guard::{ GuardUser, GuardUserOrAnonymous };
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Eq, Hash)]
 pub enum Permission {
@@ -63,17 +63,6 @@ pub enum ActionContext {
         cities: Option<Vec<String>>,
         venue_types: Option<Vec<VenueType>>,
     },
-}
-
-// User Service Response structure
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserServiceAuthResponse {
-    pub user_id: String,
-    pub user_role: UserRole,
-    pub roles: Vec<String>, // Convert to UserRole enum
-    pub verifications: Option<UserVerifications>,
-    pub country_code: String, // User's country code for MongoDB shard targeting (e.g., "US", "GB", "DE")
 }
 
 // === Abstract Permission Checker Trait ===
