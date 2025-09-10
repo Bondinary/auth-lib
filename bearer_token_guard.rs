@@ -78,6 +78,14 @@ pub struct GuardAnonymousRegistration {
 }
 
 #[derive(Debug, Clone)]
+pub struct GuardPreRegistration {
+    pub user_id: String,
+    pub firebase_user_id: String,
+    pub phone_number: Option<String>,
+    pub country_code: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct GuardInternal;
 
 // === Verification System ===
@@ -986,6 +994,210 @@ impl<'r> FromRequest<'r> for GuardInternal {
     }
 }
 
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for GuardPreRegistration {
+    type Error = ApiError;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        debug!("Attempting user authentication for pre registration request.");
+
+        // 1. Validate internal API key
+        let expected_api_key = match get_env_var(INTERNAL_API_KEY, None) {
+            Ok(key) => key,
+            Err(e) => {
+                error!("INTERNAL_API_KEY environment variable not set: {}", e);
+                return Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "Authentication service misconfigured.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        let provided_api_key = request.headers().get_one(X_INTERNAL_API_KEY);
+        if provided_api_key != Some(expected_api_key.as_str()) {
+            warn!("Invalid or missing X-Internal-API-Key");
+            return Outcome::Error((
+                Status::Forbidden,
+                ApiError::Unauthorized {
+                    message: "Unauthorized internal access.".to_string(),
+                },
+            ));
+        }
+
+        // 2. Extract required headers
+        let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
+            Some(uid) => uid.to_string(),
+            None => {
+                return Outcome::Error((
+                    Status::BadRequest,
+                    ApiError::BadRequest {
+                        message: "Missing X-Firebase-UID header.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        let phone_number = match request.headers().get_one(X_PHONE_NUMBER) {
+            Some(phone) => phone.to_string(),
+            None => {
+                return Outcome::Error((
+                    Status::BadRequest,
+                    ApiError::BadRequest {
+                        message: "Missing X-Phone-Number header.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        // 3. Parse country code from phone (if provided)
+
+        let parsed_phone_number_result: Result<PhoneNumber, ParseError> = phonenumber::parse(
+            None,
+            &phone_number
+        );
+
+        let parsed_phone_number: PhoneNumber = match parsed_phone_number_result {
+            Ok(pn) => pn,
+            Err(e) => {
+                warn!(
+                    "Failed to parse phone number '{}' from X-Phone-Number header: {:?}",
+                    phone_number,
+                    e
+                );
+                return Outcome::Error((
+                    Status::BadRequest,
+                    ApiError::BadRequest {
+                        message: format!(
+                            "Invalid phone number format propagated by gateway: {:?}",
+                            e
+                        ),
+                    },
+                ));
+            }
+        };
+
+        let country_id_option = parsed_phone_number.country().id();
+
+        let country_id_enum = match country_id_option {
+            Some(country_id_enum_variant) => country_id_enum_variant,
+            None => {
+                warn!("Could not derive country code from phone number '{}'. Phone number might be invalid or incomplete for country inference.", phone_number);
+                return Outcome::Error((
+                    Status::BadRequest,
+                    ApiError::BadRequest {
+                        message: "Country code could not be derived from propagated phone number.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        let country_code_alpha2 = format!("{country_id_enum:?}");
+        debug!("Country code resolved from phone number: {}", country_code_alpha2);
+        let country_code = country_code_alpha2;
+
+        // 4. Get user data from User Service
+        let http_client = match request.guard::<&rocket::State<Arc<reqwest::Client>>>().await {
+            Outcome::Success(client) => client,
+            _ => {
+                error!("HttpClient not available in Rocket state");
+                return Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "HTTP client not configured.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        let user_service_url = match request.guard::<&rocket::State<UsersServiceUrl>>().await {
+            Outcome::Success(url) => &url.0,
+            _ => {
+                error!("UsersServiceUrl not available in Rocket state");
+                return Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "User service URL not configured.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        // 5. Call user service for authentication data
+        let auth_url = format!(
+            "{}/users/exists?firebase_user_id={}",
+            user_service_url,
+            urlencoding::encode(&firebase_user_id),
+        );
+
+        let response = match
+            http_client.get(&auth_url).header(X_INTERNAL_API_KEY, &expected_api_key).send().await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                error!("Failed to call User Service: {}", e);
+                return Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "User service unavailable.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        // 6. Handle different response statuses
+        match response.status().as_u16() {
+            200 => {
+                // User exists and is registered - continue with normal flow
+                let auth_data: UserServiceAuthResponse = match response.json().await {
+                    Ok(data) => data,
+                    Err(e) => {
+                        error!("Failed to parse User Service response: {}", e);
+                        return Outcome::Error((
+                            Status::InternalServerError,
+                            ApiError::InternalServerError {
+                                message: "Invalid user service response.".to_string(),
+                            },
+                        ));
+                    }
+                };
+
+                Outcome::Success(GuardPreRegistration {
+                    user_id: auth_data.user_id,
+                    firebase_user_id,
+                    phone_number: Some(phone_number),
+                    country_code,
+                })
+            }
+            404 => {
+                // User not found - they need to register
+                let endpoint_path = request.uri().path().to_string();
+
+                info!(
+                    "Unregistered user with firebase_id {} attempted to access endpoint: {}",
+                    firebase_user_id,
+                    endpoint_path
+                );
+
+                Outcome::Error((
+                    Status::PreconditionRequired, // 428
+                    ApiError::registration_required(&endpoint_path),
+                ))
+            }
+            status_code => {
+                error!("User Service returned error: {}", status_code);
+                Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: format!("User authentication failed: {}", status_code),
+                    },
+                ))
+            }
+        }
+    }
+}
+
 // === OpenAPI Implementations ===
 
 // OpenAPI configuration for GuardUser
@@ -1051,6 +1263,69 @@ impl<'a> OpenApiFromRequest<'a> for GuardUser {
         security_req.insert(firebase_user_id_scheme_name.to_owned(), Vec::new());
         security_req.insert(phone_number_scheme_name.to_owned(), Vec::new());
         security_req.insert(city_scheme_name.to_owned(), Vec::new());
+
+        Ok(
+            RequestHeaderInput::Security(
+                "InternalMicroserviceHeaders".to_owned(),
+                internal_api_key_scheme,
+                security_req
+            )
+        )
+    }
+}
+
+
+// OpenAPI configuration for GuardUser
+impl<'a> OpenApiFromRequest<'a> for GuardPreRegistration {
+    fn from_request_input(
+        _gen: &mut OpenApiGenerator,
+        _name: String,
+        _required: bool
+    ) -> rocket_okapi::Result<RequestHeaderInput> {
+        // --- 1. Define Security Scheme for X-Internal-API-Key ---
+        let internal_api_key_scheme_name = "InternalApiKeyAuth";
+        let internal_api_key_scheme = SecurityScheme {
+            description: Some(
+                "Internal API key to authenticate the calling service (e.g., API Gateway).".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: X_INTERNAL_API_KEY.to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 2. Define Security Scheme for X-Firebase-UID ---
+        let firebase_user_id_scheme_name = "FirebaseUidAuth";
+        let _firebase_user_id_scheme = SecurityScheme {
+            description: Some(
+                "Firebase User ID (UID) of the authenticated user, propagated by the API Gateway.".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: X_FIREBASE_UID.to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- 3. Define Security Scheme for X-Phone-Number ---
+        let phone_number_scheme_name = "PhoneNumberAuth";
+        let _phone_number_scheme = SecurityScheme {
+            description: Some(
+                "User's phone number in E.164 format (e.g., '+1234567890'), propagated by the API Gateway (optional).".to_owned()
+            ),
+            data: SecuritySchemeData::ApiKey {
+                name: X_PHONE_NUMBER.to_owned(),
+                location: "header".to_owned(),
+            },
+            extensions: Object::default(),
+        };
+
+        // --- Create a Security Requirement that lists ALL of these schemes ---
+        let mut security_req = SecurityRequirement::new();
+        security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new());
+        security_req.insert(firebase_user_id_scheme_name.to_owned(), Vec::new());
+        security_req.insert(phone_number_scheme_name.to_owned(), Vec::new());
 
         Ok(
             RequestHeaderInput::Security(
