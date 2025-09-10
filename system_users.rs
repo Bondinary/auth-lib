@@ -56,7 +56,6 @@ impl SystemUserConfig {
             city: None,
             user_role: None,
             verifications: None,
-            data_region: "US".to_string(), // Default to US for system users
         }
     }
 

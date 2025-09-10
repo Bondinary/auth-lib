@@ -73,7 +73,7 @@ pub struct UserServiceAuthResponse {
     pub user_role: UserRole,
     pub roles: Vec<String>, // Convert to UserRole enum
     pub verifications: Option<UserVerifications>,
-    pub data_region: Option<String>, // User's data region (EU, US, APAC) - fallback to US if None
+    pub country_code: String, // User's country code for MongoDB shard targeting (e.g., "US", "GB", "DE")
 }
 
 // === Abstract Permission Checker Trait ===
