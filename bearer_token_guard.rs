@@ -34,7 +34,7 @@ use common_lib::constants::{
 };
 use common_lib::error::ApiError;
 use common_lib::utils::get_env_var;
-use phonenumber::PhoneNumber;
+use crate::common_lib::country_utils::CountryService;
 use rocket::http::Status;
 use rocket::request::{ FromRequest, Outcome, Request };
 use rocket_okapi::r#gen::OpenApiGenerator;
@@ -118,30 +118,6 @@ async fn get_http_dependencies<'a>(
         })?;
 
     Ok((http_client, &user_service_url.0))
-}
-
-/// Parse phone number and extract country code
-fn parse_phone_number_and_country(phone: &str) -> Result<String, ApiError> {
-    let parsed_phone_number: PhoneNumber = phonenumber::parse(None, phone).map_err(|e| {
-        warn!("Failed to parse phone number '{}': {:?}", phone, e);
-        ApiError::BadRequest {
-            message: format!("Invalid phone number format propagated by gateway: {:?}", e),
-        }
-    })?;
-
-    let country_id_enum = parsed_phone_number
-        .country()
-        .id()
-        .ok_or_else(|| {
-            warn!("Could not derive country code from phone number '{}'", phone);
-            ApiError::BadRequest {
-                message: "Country code could not be derived from propagated phone number.".to_string(),
-            }
-        })?;
-
-    let country_code = format!("{country_id_enum:?}");
-    debug!("Country code resolved from phone number: {}", country_code);
-    Ok(country_code)
 }
 
 /// Convert role strings from API to ClientUserRole enums
@@ -404,6 +380,10 @@ pub enum ClientScope {
 
 impl GuardUser {
     /// Check if user can access a specific client (based on existing Client model)
+    /// Check if user can access a specific client (based on existing Client model)
+    /// LOW-LEVEL VERIFICATION CHECK: Direct verification status validation
+    /// Use this for: Quick verification status checks, audit trails, debugging
+    /// For business logic permissions, use: PolicyEngine.evaluate_permission()
     pub fn can_access_client(&self, client: &Client) -> bool {
         if let Some(verifications) = &self.verifications {
             // Check if user has verification for this client
@@ -421,6 +401,9 @@ impl GuardUser {
     }
 
     /// Check if user can access a specific venue based on client auth requirements
+    /// LOW-LEVEL VERIFICATION CHECK: Auth requirement validation
+    /// Use this for: Venue entry validation, quick auth checks
+    /// For business logic permissions, use: PolicyEngine.evaluate_permission()
     pub fn can_access_venue(&self, client: &Client) -> bool {
         // If client doesn't require auth, anyone can access
         if let Some(client_auth) = &client.auth {
@@ -443,6 +426,7 @@ impl GuardUser {
     }
 
     /// Check if user has email domain verification for this client
+    /// LOW-LEVEL VERIFICATION CHECK: Email domain verification status
     fn has_client_email_domain_verification(
         &self,
         client: &Client,
@@ -464,6 +448,7 @@ impl GuardUser {
     }
 
     /// Check if user has token verification for this client
+    /// LOW-LEVEL VERIFICATION CHECK: Token verification status
     fn has_client_token_verification(&self, client: &Client, client_auth: &ClientAuth) -> bool {
         if let Some(verifications) = &self.verifications {
             if let Some(client_token) = &client_auth.client_token {
@@ -481,6 +466,7 @@ impl GuardUser {
     }
 
     /// Check if user has specific venue verification (for events, conferences)
+    /// LOW-LEVEL VERIFICATION CHECK: Venue-specific verification status
     pub fn has_venue_specific_verification(&self, venue_id: &str) -> bool {
         if let Some(verifications) = &self.verifications {
             verifications.venue_verifications
@@ -497,6 +483,7 @@ impl GuardUser {
     }
 
     /// Get user's role within a specific client organization
+    /// LOW-LEVEL VERIFICATION CHECK: Role lookup within client
     pub fn get_client_role(&self, client_id: &str) -> Option<ClientUserRole> {
         if let Some(verifications) = &self.verifications {
             verifications.client_verifications
@@ -517,6 +504,9 @@ impl GuardUser {
     }
 
     /// Check if user can perform action in specific context
+    /// HIGH-LEVEL BUSINESS LOGIC: Use PolicyEngine for complex permission evaluation
+    /// Example: "Can this student create content during exam period?"
+    /// For simple verification checks, use: can_access_client(), has_venue_specific_verification()
     pub fn can_perform_action_with_checker(
         &self,
         permission: &Permission,
@@ -527,6 +517,9 @@ impl GuardUser {
     }
 
     /// Require permission or return error using provided permission checker
+    /// HIGH-LEVEL BUSINESS LOGIC: Use PolicyEngine for complex permission validation
+    /// Example: Validate "CanCreateSponsorContent" with venue type restrictions
+    /// For simple verification checks, use: can_access_client(), has_venue_specific_verification()
     pub fn require_permission_with_checker(
         &self,
         permission: &Permission,
@@ -549,6 +542,9 @@ impl GuardUser {
     }
 
     /// Get user's current capabilities using provided permission checker
+    /// HIGH-LEVEL BUSINESS LOGIC: Use PolicyEngine to get all available permissions
+    /// Example: Get all permissions available to this user in this venue
+    /// For simple verification checks, use: get_client_role(), is_phone_verified()
     pub fn get_capabilities_with_checker(
         &self,
         context: &ActionContext,
@@ -741,28 +737,32 @@ impl<'r> FromRequest<'r> for GuardUser {
             }
         };
 
-        let phone_number_str = request
-            .headers()
-            .get_one(X_PHONE_NUMBER)
-            .map(|p| p.to_string());
+        let phone_number = match request.headers().get_one(X_PHONE_NUMBER) {
+            Some(phone) => phone.to_string(),
+            None => {
+                return Outcome::Error((
+                    Status::BadRequest,
+                    ApiError::BadRequest {
+                        message: "Missing X-Phone-Number header.".to_string(),
+                    },
+                ));
+            }
+        };
+
         let city = request
             .headers()
             .get_one(X_CITY)
             .map(|c| c.to_string());
 
         // 3. Parse country code from phone (if provided)
-        let country_code = if let Some(ref phone) = phone_number_str {
-            match parse_phone_number_and_country(phone) {
-                Ok(cc) => cc,
-                Err(e) => {
-                    return Outcome::Error((
-                        Status::from_code(e.status_code()).unwrap_or(Status::BadRequest),
-                        e,
-                    ));
-                }
+        let country_code = match CountryService::parse_phone_number_to_country(&phone_number) {
+            Ok(cc) => cc,
+            Err(e) => {
+                return Outcome::Error((
+                    Status::from_code(e.status_code()).unwrap_or(Status::BadRequest),
+                    e,
+                ));
             }
-        } else {
-            UNKNOWN.to_string()
         };
 
         // 4. Get HTTP dependencies
@@ -841,7 +841,7 @@ impl<'r> FromRequest<'r> for GuardUser {
         Outcome::Success(GuardUser {
             user_id: auth_data.user_id,
             firebase_user_id,
-            phone_number: phone_number_str,
+            phone_number: Some(phone_number),
             country_code,
             city,
             user_role: Some(auth_data.user_role),
@@ -1061,7 +1061,7 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
         };
 
         // 3. Parse country code from phone
-        let country_code = match parse_phone_number_and_country(&phone_number) {
+        let country_code = match CountryService::parse_phone_number_to_country(&phone_number) {
             Ok(cc) => cc,
             Err(e) => {
                 return Outcome::Error((
