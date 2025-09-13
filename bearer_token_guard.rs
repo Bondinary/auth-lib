@@ -1056,7 +1056,9 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
         };
 
         // 3. Parse country code from phone
-        let country_code = match CountryService::parse_phone_number_to_country(&phone_number) {
+        let country_code_from_phone_number = match
+            CountryService::parse_phone_number_to_country(&phone_number)
+        {
             Ok(cc) => cc,
             Err(e) => {
                 return Outcome::Error((
@@ -1077,12 +1079,21 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
             }
         };
 
+        let country_code_from_header = request
+            .headers()
+            .get_one(X_COUNTRY_CODE)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| {
+                debug!("No X-Country-Code header found, using UNKNOWN for anonymous registration");
+                UNKNOWN.to_string()
+            });
+
         // 5. Call user service for authentication data
         let auth_url = format!(
             "{}/users/exists?firebase_user_id={}&country_code={}",
             user_service_url,
             urlencoding::encode(&firebase_user_id),
-            urlencoding::encode(&country_code)
+            urlencoding::encode(&country_code_from_header)
         );
 
         let auth_data = match call_user_service(http_client, &auth_url, &expected_api_key).await {
@@ -1114,7 +1125,7 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
             user_id: auth_data.user_id,
             firebase_user_id,
             phone_number: Some(phone_number),
-            country_code,
+            country_code: country_code_from_phone_number,
         })
     }
 }
