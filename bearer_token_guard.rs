@@ -1079,9 +1079,10 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
 
         // 5. Call user service for authentication data
         let auth_url = format!(
-            "{}/users/exists?firebase_user_id={}",
+            "{}/users/exists?firebase_user_id={}&country_code={}",
             user_service_url,
-            urlencoding::encode(&firebase_user_id)
+            urlencoding::encode(&firebase_user_id),
+            urlencoding::encode(&country_code)
         );
 
         let auth_data = match call_user_service(http_client, &auth_url, &expected_api_key).await {
