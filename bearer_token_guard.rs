@@ -35,6 +35,7 @@ use common_lib::constants::{
 use common_lib::error::ApiError;
 use common_lib::utils::get_env_var;
 use crate::common_lib::country_utils::CountryService;
+use crate::common_lib::geolocation::{ GeolocationService, extract_client_ip_from_headers };
 use rocket::http::Status;
 use rocket::request::{ FromRequest, Outcome, Request };
 use rocket_okapi::r#gen::OpenApiGenerator;
@@ -412,7 +413,7 @@ impl GuardUser {
                     self.has_client_email_domain_verification(client, client_auth)
                 }
                 Some(AuthType::Token) => { self.has_client_token_verification(client, client_auth) }
-                None => false,
+                _ => false,
             }
         } else {
             // No auth config means open access
@@ -722,7 +723,7 @@ impl<'r> FromRequest<'r> for GuardUser {
         // 2. Extract required headers
         let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
             Some(uid) => uid.to_string(),
-            None => {
+            _ => {
                 return Outcome::Error((
                     Status::BadRequest,
                     ApiError::BadRequest {
@@ -734,7 +735,7 @@ impl<'r> FromRequest<'r> for GuardUser {
 
         let phone_number = match request.headers().get_one(X_PHONE_NUMBER) {
             Some(phone) => phone.to_string(),
-            None => {
+            _ => {
                 return Outcome::Error((
                     Status::BadRequest,
                     ApiError::BadRequest {
@@ -883,7 +884,7 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
         // 2. Extract Firebase UID (required for anonymous)
         let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
             Some(uid) => uid.to_string(),
-            None => {
+            _ => {
                 return Outcome::Error((
                     Status::BadRequest,
                     ApiError::BadRequest {
@@ -1033,7 +1034,7 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
         // 2. Extract required headers
         let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
             Some(uid) => uid.to_string(),
-            None => {
+            _ => {
                 return Outcome::Error((
                     Status::BadRequest,
                     ApiError::BadRequest {
@@ -1045,7 +1046,7 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
 
         let phone_number = match request.headers().get_one(X_PHONE_NUMBER) {
             Some(phone) => phone.to_string(),
-            None => {
+            _ => {
                 return Outcome::Error((
                     Status::BadRequest,
                     ApiError::BadRequest {
@@ -1390,7 +1391,7 @@ impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
         // 2. Extract Firebase UID (required)
         let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
             Some(uid) => uid.to_string(),
-            None => {
+            _ => {
                 return Outcome::Error((
                     Status::BadRequest,
                     ApiError::BadRequest {
@@ -1400,21 +1401,96 @@ impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
             }
         };
 
-        // 3. Get country code or default to UNKNOWN
-        let country_code = request
-            .headers()
-            .get_one(X_COUNTRY_CODE)
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| {
-                debug!("No X-Country-Code header found, using UNKNOWN for anonymous registration");
-                UNKNOWN.to_string()
-            });
-
-        // 4. Extract city (optional)
-        let city = request
-            .headers()
-            .get_one(X_CITY)
-            .map(|c| c.to_string());
+        // 3. Get country code and city using geolocation if not provided in headers
+        let (country_code, city) = match
+            (request.headers().get_one(X_COUNTRY_CODE), request.headers().get_one(X_CITY))
+        {
+            // Both headers provided - use them directly
+            (Some(country), Some(city_header)) => {
+                debug!("Using country and city from headers: {}, {}", country, city_header);
+                (country.to_string(), Some(city_header.to_string()))
+            }
+            // Only country provided - use it and try to get city from geolocation
+            (Some(country), _) => {
+                debug!("Country provided in header, attempting to get city from geolocation");
+                let city = match extract_client_ip_from_headers(request.headers()) {
+                    Some(ip) => {
+                        match
+                            request.guard::<&rocket::State<GeolocationService>>().await.succeeded()
+                        {
+                            Some(geo_service) => {
+                                match geo_service.get_location(&ip).await {
+                                    Ok(location) => {
+                                        debug!(
+                                            "Geolocation successful for IP {}: city={:?}",
+                                            ip,
+                                            location.city
+                                        );
+                                        location.city
+                                    }
+                                    Err(e) => {
+                                        warn!("Geolocation failed for IP {}: {}", ip, e);
+                                        None
+                                    }
+                                }
+                            }
+                            _ => {
+                                warn!("GeolocationService not available in Rocket state");
+                                None
+                            }
+                        }
+                    }
+                    _ => {
+                        debug!("No client IP found in headers for geolocation");
+                        None
+                    }
+                };
+                (country.to_string(), city)
+            }
+            // No country or city headers - use geolocation for both
+            _ => {
+                debug!("No country/city headers found, using geolocation for both");
+                match extract_client_ip_from_headers(request.headers()) {
+                    Some(ip) => {
+                        match
+                            request.guard::<&rocket::State<GeolocationService>>().await.succeeded()
+                        {
+                            Some(geo_service) => {
+                                match geo_service.get_location(&ip).await {
+                                    Ok(location) => {
+                                        debug!(
+                                            "Geolocation successful for IP {}: country={}, city={:?}",
+                                            ip,
+                                            location.country_code,
+                                            location.city
+                                        );
+                                        (location.country_code, location.city)
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "Geolocation failed for IP {}, using default: {}",
+                                            ip,
+                                            e
+                                        );
+                                        (UNKNOWN.to_string(), None)
+                                    }
+                                }
+                            }
+                            _ => {
+                                warn!(
+                                    "GeolocationService not available in Rocket state, using default"
+                                );
+                                (UNKNOWN.to_string(), None)
+                            }
+                        }
+                    }
+                    _ => {
+                        debug!("No client IP found in headers, using default country");
+                        (UNKNOWN.to_string(), None)
+                    }
+                }
+            }
+        };
 
         debug!(
             "Anonymous registration guard created: firebase_user_id={}, country_code={}, city={:?}",
