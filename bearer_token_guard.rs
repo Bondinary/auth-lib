@@ -1416,7 +1416,9 @@ impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
                 let city = match extract_client_ip_from_headers(request.headers()) {
                     Some(ip) => {
                         match
-                            request.guard::<&rocket::State<GeolocationService>>().await.succeeded()
+                            request
+                                .guard::<&rocket::State<Arc<GeolocationService>>>().await
+                                .succeeded()
                         {
                             Some(geo_service) => {
                                 match geo_service.get_location(&ip).await {
@@ -1453,7 +1455,9 @@ impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
                 match extract_client_ip_from_headers(request.headers()) {
                     Some(ip) => {
                         match
-                            request.guard::<&rocket::State<GeolocationService>>().await.succeeded()
+                            request
+                                .guard::<&rocket::State<Arc<GeolocationService>>>().await
+                                .succeeded()
                         {
                             Some(geo_service) => {
                                 match geo_service.get_location(&ip).await {
