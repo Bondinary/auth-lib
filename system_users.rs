@@ -53,7 +53,7 @@ impl SystemUserConfig {
             country_code: self.country_code.clone(),
             firebase_user_id: self.firebase_user_id.clone(),
             phone_number: Some(self.phone_number.clone()),
-            city: None,
+            city: None, // System users don't have city typically
             user_role: None,
             verifications: None,
         }

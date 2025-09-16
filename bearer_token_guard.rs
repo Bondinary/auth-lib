@@ -25,9 +25,7 @@ use backend_domain::{ AuthType, Client, ClientAuth, ClientUserRole };
 use chrono::{ DateTime, Utc };
 use common_lib::constants::{
     INTERNAL_API_KEY,
-    UNKNOWN,
-    X_CITY,
-    X_COUNTRY_CODE,
+    GB,
     X_FIREBASE_UID,
     X_INTERNAL_API_KEY,
     X_PHONE_NUMBER,
@@ -35,7 +33,7 @@ use common_lib::constants::{
 use common_lib::error::ApiError;
 use common_lib::utils::get_env_var;
 use crate::common_lib::country_utils::CountryService;
-use crate::common_lib::geolocation::{ GeolocationService, extract_client_ip_from_headers };
+use crate::common_lib::geolocation::{ GeolocationService, get_location_from_headers };
 use rocket::http::Status;
 use rocket::request::{ FromRequest, Outcome, Request };
 use rocket_okapi::r#gen::OpenApiGenerator;
@@ -142,7 +140,7 @@ fn convert_role_strings(role_strings: &[String]) -> HashSet<ClientUserRole> {
                 "Admin" => Some(ClientUserRole::Admin),
                 "ClientAdmin" => Some(ClientUserRole::Admin),
                 _ => {
-                    warn!("Unknown role: {}", role_str);
+                    warn!("GB role: {}", role_str);
                     None
                 }
             }
@@ -745,11 +743,6 @@ impl<'r> FromRequest<'r> for GuardUser {
             }
         };
 
-        let city = request
-            .headers()
-            .get_one(X_CITY)
-            .map(|c| c.to_string());
-
         // 3. Parse country code from phone (if provided)
         let country_code = match CountryService::parse_phone_number_to_country(&phone_number) {
             Ok(cc) => cc,
@@ -839,7 +832,7 @@ impl<'r> FromRequest<'r> for GuardUser {
             firebase_user_id,
             phone_number: Some(phone_number),
             country_code,
-            city,
+            city: None, // GuardUser uses country from phone number, city not needed
             user_role: Some(auth_data.user_role),
             roles,
             verifications: None,
@@ -905,13 +898,33 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
             }
         };
 
-        let country_code = request
-            .headers()
-            .get_one(X_COUNTRY_CODE)
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| UNKNOWN.to_string());
+        // 3.1. Get country code and city using IP geolocation
+        let (country_code, city) = match
+            request.guard::<&rocket::State<Arc<GeolocationService>>>().await.succeeded()
+        {
+            Some(geo_service) => {
+                match get_location_from_headers(request.headers(), geo_service).await {
+                    Ok(location) => {
+                        debug!(
+                            "Geolocation successful for anonymous user: country={}, city={:?}",
+                            location.country_code,
+                            location.city
+                        );
+                        (location.country_code, location.city)
+                    }
+                    Err(e) => {
+                        warn!("Geolocation failed for anonymous user, using default: {}", e);
+                        (GB.to_string(), None)
+                    }
+                }
+            }
+            _ => {
+                warn!("GeolocationService not available in Rocket state, using default");
+                (GB.to_string(), None)
+            }
+        };
 
-        // 4. Call user service for authentication data
+        // 4. Call user service for authentication data using geolocation country code
         let auth_url = format!(
             "{}/users/exists?firebase_user_id={}&country_code={}",
             user_service_url,
@@ -928,11 +941,6 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
                 ));
             }
         };
-
-        let city = request
-            .headers()
-            .get_one(X_CITY)
-            .map(|c| c.to_string());
 
         Outcome::Success(GuardAnonymous {
             user_id: auth_data.user_id,
@@ -1080,21 +1088,38 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
             }
         };
 
-        let country_code_from_header = request
-            .headers()
-            .get_one(X_COUNTRY_CODE)
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| {
-                debug!("No X-Country-Code header found, using UNKNOWN for anonymous registration");
-                UNKNOWN.to_string()
-            });
+        // 4.1. Get country code using IP geolocation
+        let country_code_from_geolocation = match
+            request.guard::<&rocket::State<Arc<GeolocationService>>>().await.succeeded()
+        {
+            Some(geo_service) => {
+                match get_location_from_headers(request.headers(), geo_service).await {
+                    Ok(location) => {
+                        debug!(
+                            "Geolocation successful for pre-registration: country={}, city={:?}",
+                            location.country_code,
+                            location.city
+                        );
+                        location.country_code
+                    }
+                    Err(e) => {
+                        warn!("Geolocation failed for pre-registration, using default: {}", e);
+                        GB.to_string()
+                    }
+                }
+            }
+            _ => {
+                warn!("GeolocationService not available in Rocket state, using default");
+                GB.to_string()
+            }
+        };
 
-        // 5. Call user service for authentication data
+        // 5. Call user service for authentication data using geolocation country code
         let auth_url = format!(
             "{}/users/exists?firebase_user_id={}&country_code={}",
             user_service_url,
             urlencoding::encode(&firebase_user_id),
-            urlencoding::encode(&country_code_from_header)
+            urlencoding::encode(&country_code_from_geolocation)
         );
 
         let auth_data = match call_user_service(http_client, &auth_url, &expected_api_key).await {
@@ -1256,22 +1281,10 @@ impl<'a> OpenApiFromRequest<'a> for GuardAnonymous {
             extensions: Object::default(),
         };
 
-        // --- 3. Define Security Scheme for X-City ---
-        let city_scheme_name = "CityAuth";
-        let _city_scheme = SecurityScheme {
-            description: Some("User's city, propagated by the API Gateway (optional).".to_owned()),
-            data: SecuritySchemeData::ApiKey {
-                name: X_CITY.to_owned(),
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
         // --- Create a Security Requirement ---
         let mut security_req = SecurityRequirement::new();
         security_req.insert(internal_api_key_scheme_name.to_owned(), Vec::new());
         security_req.insert(firebase_user_id_scheme_name.to_owned(), Vec::new());
-        security_req.insert(city_scheme_name.to_owned(), Vec::new());
 
         Ok(
             RequestHeaderInput::Security(
@@ -1401,98 +1414,29 @@ impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
             }
         };
 
-        // 3. Get country code and city using geolocation if not provided in headers
+        // 3. Get country code and city using IP geolocation
         let (country_code, city) = match
-            (request.headers().get_one(X_COUNTRY_CODE), request.headers().get_one(X_CITY))
+            request.guard::<&rocket::State<Arc<GeolocationService>>>().await.succeeded()
         {
-            // Both headers provided - use them directly
-            (Some(country), Some(city_header)) => {
-                debug!("Using country and city from headers: {}, {}", country, city_header);
-                (country.to_string(), Some(city_header.to_string()))
-            }
-            // Only country provided - use it and try to get city from geolocation
-            (Some(country), _) => {
-                debug!("Country provided in header, attempting to get city from geolocation");
-                let city = match extract_client_ip_from_headers(request.headers()) {
-                    Some(ip) => {
-                        match
-                            request
-                                .guard::<&rocket::State<Arc<GeolocationService>>>().await
-                                .succeeded()
-                        {
-                            Some(geo_service) => {
-                                match geo_service.get_location(&ip).await {
-                                    Ok(location) => {
-                                        debug!(
-                                            "Geolocation successful for IP {}: city={:?}",
-                                            ip,
-                                            location.city
-                                        );
-                                        location.city
-                                    }
-                                    Err(e) => {
-                                        warn!("Geolocation failed for IP {}: {}", ip, e);
-                                        None
-                                    }
-                                }
-                            }
-                            _ => {
-                                warn!("GeolocationService not available in Rocket state");
-                                None
-                            }
-                        }
+            Some(geo_service) => {
+                match get_location_from_headers(request.headers(), geo_service).await {
+                    Ok(location) => {
+                        debug!(
+                            "Geolocation successful: country={}, city={:?}",
+                            location.country_code,
+                            location.city
+                        );
+                        (location.country_code, location.city)
                     }
-                    _ => {
-                        debug!("No client IP found in headers for geolocation");
-                        None
-                    }
-                };
-                (country.to_string(), city)
-            }
-            // No country or city headers - use geolocation for both
-            _ => {
-                debug!("No country/city headers found, using geolocation for both");
-                match extract_client_ip_from_headers(request.headers()) {
-                    Some(ip) => {
-                        match
-                            request
-                                .guard::<&rocket::State<Arc<GeolocationService>>>().await
-                                .succeeded()
-                        {
-                            Some(geo_service) => {
-                                match geo_service.get_location(&ip).await {
-                                    Ok(location) => {
-                                        debug!(
-                                            "Geolocation successful for IP {}: country={}, city={:?}",
-                                            ip,
-                                            location.country_code,
-                                            location.city
-                                        );
-                                        (location.country_code, location.city)
-                                    }
-                                    Err(e) => {
-                                        warn!(
-                                            "Geolocation failed for IP {}, using default: {}",
-                                            ip,
-                                            e
-                                        );
-                                        (UNKNOWN.to_string(), None)
-                                    }
-                                }
-                            }
-                            _ => {
-                                warn!(
-                                    "GeolocationService not available in Rocket state, using default"
-                                );
-                                (UNKNOWN.to_string(), None)
-                            }
-                        }
-                    }
-                    _ => {
-                        debug!("No client IP found in headers, using default country");
-                        (UNKNOWN.to_string(), None)
+                    Err(e) => {
+                        warn!("Geolocation failed, using default: {}", e);
+                        (GB.to_string(), None)
                     }
                 }
+            }
+            _ => {
+                warn!("GeolocationService not available in Rocket state, using default");
+                (GB.to_string(), None)
             }
         };
 
@@ -1536,34 +1480,10 @@ impl<'a> OpenApiFromRequest<'a> for GuardAnonymousRegistration {
         let firebase_user_id_scheme_name = "FirebaseUidAuth";
         let _firebase_user_id_scheme = SecurityScheme {
             description: Some(
-                "Firebase User ID (UID) of the anonymous user to be registered.".to_owned()
+                "Firebase User ID (UID) of the anonymous user to be registered. Country and city will be automatically detected via IP geolocation.".to_owned()
             ),
             data: SecuritySchemeData::ApiKey {
                 name: X_FIREBASE_UID.to_owned(),
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
-        // --- 3. Define Security Scheme for X-Country-Code ---
-        let _country_code_scheme_name = "CountryCodeAuth";
-        let _country_code_scheme = SecurityScheme {
-            description: Some(
-                "Country code for anonymous registration (optional, defaults to 'UNKNOWN').".to_owned()
-            ),
-            data: SecuritySchemeData::ApiKey {
-                name: X_COUNTRY_CODE.to_owned(),
-                location: "header".to_owned(),
-            },
-            extensions: Object::default(),
-        };
-
-        // --- 4. Define Security Scheme for X-City ---
-        let _city_scheme_name = "CityAuth";
-        let _city_scheme = SecurityScheme {
-            description: Some("User's city for anonymous registration (optional).".to_owned()),
-            data: SecuritySchemeData::ApiKey {
-                name: X_CITY.to_owned(),
                 location: "header".to_owned(),
             },
             extensions: Object::default(),
