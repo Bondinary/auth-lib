@@ -856,6 +856,44 @@ impl GuardUser {
 
 // === Anonymous Guard ===
 
+// Helper function to extract country_code from query string
+fn extract_country_code_from_query(query_str: &str) -> Option<String> {
+    for param in query_str.split('&') {
+        if let Some((key, value)) = param.split_once('=') {
+            if key == "country_code" {
+                return Some(urlencoding::decode(value).ok()?.into_owned());
+            }
+        }
+    }
+    None
+}
+
+// Helper function to get location via geolocation service
+async fn get_location_via_geolocation(request: &rocket::Request<'_>) -> (String, Option<String>) {
+    match request.guard::<&rocket::State<Arc<GeolocationService>>>().await.succeeded() {
+        Some(geo_service) => {
+            match get_location_from_headers(request.headers(), geo_service).await {
+                Ok(location) => {
+                    debug!(
+                        "Geolocation successful for anonymous user: country={}, city={:?}",
+                        location.country_code,
+                        location.city
+                    );
+                    (location.country_code, location.city)
+                }
+                Err(e) => {
+                    warn!("Geolocation failed for anonymous user, using default: {}", e);
+                    (GB.to_string(), None)
+                }
+            }
+        }
+        _ => {
+            warn!("GeolocationService not available in Rocket state, using default");
+            (GB.to_string(), None)
+        }
+    }
+}
+
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for GuardAnonymous {
     type Error = ApiError;
@@ -898,29 +936,20 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
             }
         };
 
-        // 3.1. Get country code and city using IP geolocation
-        let (country_code, city) = match
-            request.guard::<&rocket::State<Arc<GeolocationService>>>().await.succeeded()
-        {
-            Some(geo_service) => {
-                match get_location_from_headers(request.headers(), geo_service).await {
-                    Ok(location) => {
-                        debug!(
-                            "Geolocation successful for anonymous user: country={}, city={:?}",
-                            location.country_code,
-                            location.city
-                        );
-                        (location.country_code, location.city)
-                    }
-                    Err(e) => {
-                        warn!("Geolocation failed for anonymous user, using default: {}", e);
-                        (GB.to_string(), None)
-                    }
+        // 3.1. Try to get country code from query parameter first, then fall back to geolocation
+        let (country_code, city) = {
+            // Check if country_code is provided as a query parameter (for internal service calls)
+            if let Some(query) = request.uri().query() {
+                if let Some(country_from_query) = extract_country_code_from_query(query.as_str()) {
+                    debug!("Using country_code from query parameter for anonymous user: country={}", country_from_query);
+                    (country_from_query, None) // No city from query parameter
+                } else {
+                    // Fall back to geolocation if no country_code in query
+                    get_location_via_geolocation(request).await
                 }
-            }
-            _ => {
-                warn!("GeolocationService not available in Rocket state, using default");
-                (GB.to_string(), None)
+            } else {
+                // No query string, use geolocation
+                get_location_via_geolocation(request).await
             }
         };
 
