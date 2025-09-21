@@ -841,15 +841,54 @@ impl<'r> FromRequest<'r> for GuardUser {
 }
 
 impl GuardUser {
-    /// Extract action description from endpoint path for better user messaging
+    /// Extract action description translation key from endpoint path for better user messaging
     fn get_action_description(endpoint_path: &str) -> String {
         match endpoint_path {
-            path if path.contains("comments") => "add comments".to_string(),
-            path if path.contains("private-sparks") => "create or manage sparks".to_string(),
-            path if path.contains("users/update") => "update your profile".to_string(),
-            path if path.contains("users/my-profile") => "view your profile".to_string(),
-            path if path.contains("qr-code") => "generate QR codes".to_string(),
-            _ => "perform this action".to_string(),
+            // Comments endpoints
+            path if path.contains("comments/add") => "actionAddComments".to_string(),
+            path if path.contains("comments") => "actionViewComments".to_string(),
+
+            // Reaction endpoints
+            path if path.contains("reactions/toggle") => "actionLikeSparks".to_string(),
+            path if path.contains("reactions") => "actionReactToContent".to_string(),
+
+            // Bookmark endpoints
+            path if path.contains("bookmarks/update") => "actionBookmarkSparks".to_string(),
+            path if path.contains("bookmarks") => "actionManageBookmarks".to_string(),
+
+            // Spark creation and management
+            path if
+                path.contains("public-sparks") &&
+                (path.contains("POST") || path.contains("register"))
+            => "actionCreateSparks".to_string(),
+            path if
+                path.contains("private-sparks") &&
+                (path.contains("POST") || path.contains("register"))
+            => "actionCreateSparks".to_string(),
+            path if path.contains("sparks") => "actionManageSparks".to_string(),
+
+            // Messaging endpoints
+            path if path.contains("messages/create") => "actionSendMessages".to_string(),
+            path if path.contains("message-threads/create") =>
+                "actionStartConversations".to_string(),
+            path if path.contains("messages") => "actionAccessMessages".to_string(),
+
+            // Profile endpoints
+            path if path.contains("users/update") => "actionUpdateProfile".to_string(),
+            path if path.contains("users/my-profile") => "actionAccessProfile".to_string(),
+            path if path.contains("qr-code") => "actionGenerateQrCodes".to_string(),
+
+            // Connection endpoints
+            path if path.contains("connections") => "actionManageConnections".to_string(),
+
+            // Match endpoints
+            path if path.contains("matches") => "actionViewMatches".to_string(),
+
+            // Notification endpoints
+            path if path.contains("notifications") => "actionAccessNotifications".to_string(),
+
+            // Default fallback
+            _ => "actionPerformAction".to_string(),
         }
     }
 }
