@@ -731,19 +731,28 @@ impl<'r> FromRequest<'r> for GuardUser {
             }
         };
 
+        // 3. Extract phone number (required for GuardUser - if missing, user needs to register)
         let phone_number = match request.headers().get_one(X_PHONE_NUMBER) {
             Some(phone) => phone.to_string(),
-            _ => {
+            None => {
+                // No phone number means user needs to register
+                let endpoint_path = request.uri().path().to_string();
+                let action_description = Self::get_action_description(&endpoint_path);
+
+                info!(
+                    "User with firebase_id {} attempted to access endpoint {} without phone number - registration required",
+                    firebase_user_id,
+                    endpoint_path
+                );
+
                 return Outcome::Error((
-                    Status::BadRequest,
-                    ApiError::BadRequest {
-                        message: "Missing X-Phone-Number header.".to_string(),
-                    },
+                    Status::Ok, // 200 to bypass AWS API Gateway
+                    ApiError::registration_required(&action_description),
                 ));
             }
         };
 
-        // 3. Parse country code from phone (if provided)
+        // 4. Parse country code from phone number
         let country_code = match CountryService::parse_phone_number_to_country(&phone_number) {
             Ok(cc) => cc,
             Err(e) => {
@@ -787,7 +796,7 @@ impl<'r> FromRequest<'r> for GuardUser {
                 );
 
                 return Outcome::Error((
-                    Status::PreconditionRequired, // 428
+                    Status::Ok, // 200 to bypass AWS API Gateway
                     ApiError::registration_required(&action_description),
                 ));
             }
@@ -811,7 +820,7 @@ impl<'r> FromRequest<'r> for GuardUser {
             );
 
             return Outcome::Error((
-                Status::PreconditionRequired, // 428
+                Status::Ok, // 200 to bypass AWS API Gateway
                 ApiError::registration_required(&action_description),
             ));
         }
@@ -830,7 +839,7 @@ impl<'r> FromRequest<'r> for GuardUser {
         Outcome::Success(GuardUser {
             user_id: auth_data.user_id,
             firebase_user_id,
-            phone_number: Some(phone_number),
+            phone_number: Some(phone_number), // Wrap in Some since struct expects Option<String>
             country_code,
             city: None, // GuardUser uses country from phone number, city not needed
             user_role: Some(auth_data.user_role),
@@ -1203,7 +1212,7 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
                 );
 
                 return Outcome::Error((
-                    Status::PreconditionRequired, // 428
+                    Status::Ok, // 200 to bypass AWS API Gateway
                     ApiError::registration_required(&endpoint_path),
                 ));
             }
