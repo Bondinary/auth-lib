@@ -746,7 +746,7 @@ impl<'r> FromRequest<'r> for GuardUser {
                 );
 
                 return Outcome::Error((
-                    Status::Ok, // 200 to bypass AWS API Gateway
+                    Status::UnprocessableEntity, // 422 - custom error that might bypass AWS
                     ApiError::registration_required(&action_description),
                 ));
             }
@@ -796,7 +796,7 @@ impl<'r> FromRequest<'r> for GuardUser {
                 );
 
                 return Outcome::Error((
-                    Status::Ok, // 200 to bypass AWS API Gateway
+                    Status::UnprocessableEntity, // 422 - custom error that might bypass AWS
                     ApiError::registration_required(&action_description),
                 ));
             }
@@ -820,7 +820,7 @@ impl<'r> FromRequest<'r> for GuardUser {
             );
 
             return Outcome::Error((
-                Status::Ok, // 200 to bypass AWS API Gateway
+                Status::UnprocessableEntity, // 422 - custom error that might bypass AWS
                 ApiError::registration_required(&action_description),
             ));
         }
@@ -1212,7 +1212,7 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
                 );
 
                 return Outcome::Error((
-                    Status::Ok, // 200 to bypass AWS API Gateway
+                    Status::UnprocessableEntity, // 422 - custom error that might bypass AWS
                     ApiError::registration_required(&endpoint_path),
                 ));
             }
