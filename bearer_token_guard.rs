@@ -32,10 +32,12 @@ use common_lib::constants::{
 };
 use common_lib::error::ApiError;
 use common_lib::utils::get_env_var;
+use crate::auth_lib::authentication_service::AuthenticationService;
 use crate::common_lib::country_utils::CountryService;
 use crate::common_lib::geolocation::{ GeolocationService, get_location_from_headers };
 use rocket::http::Status;
 use rocket::request::{ FromRequest, Outcome, Request };
+use rocket::State;
 use rocket_okapi::r#gen::OpenApiGenerator;
 use rocket_okapi::okapi::openapi3::{
     Object,
@@ -708,7 +710,7 @@ impl<'r> FromRequest<'r> for GuardUser {
         debug!("Attempting user authentication for microservice request.");
 
         // 1. Validate internal API key
-        let expected_api_key = match validate_internal_api_key(request) {
+        let _expected_api_key = match validate_internal_api_key(request) {
             Ok(key) => key,
             Err(e) => {
                 return Outcome::Error((
@@ -752,39 +754,26 @@ impl<'r> FromRequest<'r> for GuardUser {
             }
         };
 
-        // 4. Parse country code from phone number
-        let country_code = match CountryService::parse_phone_number_to_country(&phone_number) {
-            Ok(cc) => cc,
-            Err(e) => {
+        // 4. Get AuthenticationService from Rocket state
+        let auth_service = match request.guard::<&State<Arc<AuthenticationService>>>().await {
+            Outcome::Success(service) => service.inner().clone(),
+            _ => {
+                error!("❌ AuthenticationService not found in Rocket state - check main.rs wiring");
                 return Outcome::Error((
-                    Status::from_code(e.status_code()).unwrap_or(Status::BadRequest),
-                    e,
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "Authentication service not configured".to_string(),
+                    },
                 ));
             }
         };
 
-        // 4. Get HTTP dependencies
-        let (http_client, user_service_url) = match get_http_dependencies(request).await {
-            Ok(deps) => deps,
-            Err(e) => {
-                return Outcome::Error((
-                    Status::from_code(e.status_code()).unwrap_or(Status::InternalServerError),
-                    e,
-                ));
-            }
-        };
-
-        // 5. Call user service for authentication data
-        let auth_url = format!(
-            "{}/users/exists?firebase_user_id={}&country_code={}",
-            user_service_url,
-            urlencoding::encode(&firebase_user_id),
-            urlencoding::encode(&country_code)
-        );
-
-        let auth_data = match call_user_service(http_client, &auth_url, &expected_api_key).await {
-            Ok(data) => data,
-            Err(ApiError::BadRequest { .. }) => {
+        // 5. Authenticate using shared service (with country_code fallback)
+        let auth_user = match
+            auth_service.authenticate_from_headers(&firebase_user_id, &phone_number).await
+        {
+            Ok(user) => user,
+            Err(ApiError::Unauthorized { .. }) => {
                 // User not found - they need to register
                 let endpoint_path = request.uri().path().to_string();
                 let action_description = Self::get_action_description(&endpoint_path);
@@ -809,13 +798,13 @@ impl<'r> FromRequest<'r> for GuardUser {
         };
 
         // 6. Check if this is an anonymous user trying to access registered-only endpoint
-        if auth_data.user_role == UserRole::Anonymous {
+        if auth_user.user_role == Some(UserRole::Anonymous) {
             let endpoint_path = request.uri().path().to_string();
             let action_description = Self::get_action_description(&endpoint_path);
 
             info!(
                 "Anonymous user {} attempted to access registered-only endpoint: {}",
-                auth_data.user_id,
+                auth_user.user_id,
                 endpoint_path
             );
 
@@ -826,23 +815,23 @@ impl<'r> FromRequest<'r> for GuardUser {
         }
 
         // 7. Convert string roles to enum roles
-        let roles = convert_role_strings(&auth_data.roles);
+        let roles = convert_role_strings(&auth_user.roles);
 
         info!(
-            "User authenticated: ID={}, State={:?}, Roles={:?}, Country={}",
-            auth_data.user_id,
-            auth_data.user_role,
+            "✅ GuardUser authenticated: ID={}, State={:?}, Roles={:?}, Country={}",
+            auth_user.user_id,
+            auth_user.user_role,
             roles,
-            auth_data.country_code
+            auth_user.country_code
         );
 
         Outcome::Success(GuardUser {
-            user_id: auth_data.user_id,
-            firebase_user_id,
-            phone_number: Some(phone_number), // Wrap in Some since struct expects Option<String>
-            country_code,
+            user_id: auth_user.user_id,
+            firebase_user_id: auth_user.firebase_user_id,
+            phone_number: Some(auth_user.phone_number),
+            country_code: auth_user.country_code,
             city: None, // GuardUser uses country from phone number, city not needed
-            user_role: Some(auth_data.user_role),
+            user_role: auth_user.user_role,
             roles,
             verifications: None,
         })
