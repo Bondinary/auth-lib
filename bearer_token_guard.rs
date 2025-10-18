@@ -748,7 +748,7 @@ impl<'r> FromRequest<'r> for GuardUser {
                 );
 
                 return Outcome::Error((
-                    Status::UnprocessableEntity, // 422 - custom error that might bypass AWS
+                    Status::UnprocessableEntity, // 422 - registration required (frontend expects this)
                     ApiError::registration_required(&action_description),
                 ));
             }
@@ -785,7 +785,7 @@ impl<'r> FromRequest<'r> for GuardUser {
                 );
 
                 return Outcome::Error((
-                    Status::UnprocessableEntity, // 422 - custom error that might bypass AWS
+                    Status::Forbidden, // 403 - User needs to complete registration
                     ApiError::registration_required(&action_description),
                 ));
             }
@@ -809,7 +809,7 @@ impl<'r> FromRequest<'r> for GuardUser {
             );
 
             return Outcome::Error((
-                Status::UnprocessableEntity, // 422 - custom error that might bypass AWS
+                Status::UnprocessableEntity, // 422 - registration required (frontend expects this)
                 ApiError::registration_required(&action_description),
             ));
         }
@@ -1201,7 +1201,7 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
                 );
 
                 return Outcome::Error((
-                    Status::UnprocessableEntity, // 422 - custom error that might bypass AWS
+                    Status::UnprocessableEntity, // 422 - registration required (frontend expects this)
                     ApiError::registration_required(&endpoint_path),
                 ));
             }
