@@ -3,7 +3,16 @@ use crate::common_lib::country_utils::CountryService;
 use crate::common_lib::error::ApiError;
 use backend_domain::UserRole;
 use log::{ debug, error, info, warn };
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{ Arc, Mutex };
+use std::time::{ Duration, Instant };
+
+/// Cached authentication result with timestamp
+#[derive(Debug, Clone)]
+struct CachedAuthResult {
+    user: AuthenticatedUser,
+    cached_at: Instant,
+}
 
 /// Shared authentication service for both REST (GuardUser) and WebSocket
 ///
@@ -12,12 +21,21 @@ use std::sync::Arc;
 /// - WebSocket: Get JWT token and validate it here (no API Gateway validation)
 ///
 /// Both paths converge to the same user service lookup with country_code fallback.
+///
+/// 🔥 CRITICAL PERFORMANCE OPTIMIZATION:
+/// Auth results are cached for 5 minutes to prevent MongoDB overload.
+/// Without caching: 16 requests/8s = 16 MongoDB queries
+/// With caching: 16 requests/8s = 1 MongoDB query (94% reduction)
 #[derive(Clone)]
 pub struct AuthenticationService {
     auth_helper: Arc<AuthHelper>,
     http_client: Arc<reqwest::Client>,
     users_service_url: String,
     internal_api_key: String,
+    /// Auth result cache: key = "firebase_uid:country_code"
+    /// TTL: 5 minutes (300 seconds)
+    auth_cache: Arc<Mutex<HashMap<String, CachedAuthResult>>>,
+    cache_ttl: Duration,
 }
 
 impl AuthenticationService {
@@ -32,7 +50,28 @@ impl AuthenticationService {
             http_client,
             users_service_url,
             internal_api_key,
+            auth_cache: Arc::new(Mutex::new(HashMap::new())),
+            cache_ttl: Duration::from_secs(300), // 5 minutes
         }
+    }
+
+    /// Cleanup stale cache entries older than TTL
+    /// Should be called periodically (e.g., every 5 minutes)
+    pub fn cleanup_auth_cache(&self) -> usize {
+        let mut cache = self.auth_cache.lock().unwrap();
+        let initial_size = cache.len();
+
+        cache.retain(|_, cached_result| { cached_result.cached_at.elapsed() < self.cache_ttl });
+
+        let removed = initial_size - cache.len();
+        if removed > 0 {
+            debug!(
+                "🧹 Cleaned up {} stale auth cache entries (remaining: {})",
+                removed,
+                cache.len()
+            );
+        }
+        removed
     }
 
     /// Authenticate user from pre-validated Firebase UID and phone number
@@ -41,6 +80,8 @@ impl AuthenticationService {
     /// - Receives Firebase UID from X-Firebase-UID header (already validated by API Gateway)
     /// - Receives phone number from X-Phone-Number header
     /// - No JWT validation needed
+    ///
+    /// 🔥 PERFORMANCE: Results cached for 5 minutes
     pub async fn authenticate_from_headers(
         &self,
         firebase_uid: &str,
@@ -54,8 +95,44 @@ impl AuthenticationService {
             e
         })?;
 
-        // Call user service with fallback
-        self.lookup_user(firebase_uid, &country_code, phone_number).await
+        // Check cache first
+        let cache_key = format!("{}:{}", firebase_uid, country_code);
+        {
+            let cache = self.auth_cache.lock().unwrap();
+            if let Some(cached_result) = cache.get(&cache_key) {
+                if cached_result.cached_at.elapsed() < self.cache_ttl {
+                    debug!(
+                        "⚡ Auth cache HIT: firebase_uid={}, age={}ms (TTL=300s)",
+                        firebase_uid,
+                        cached_result.cached_at.elapsed().as_millis()
+                    );
+                    return Ok(cached_result.user.clone());
+                } else {
+                    debug!("⏰ Auth cache EXPIRED: firebase_uid={}", firebase_uid);
+                }
+            }
+        }
+
+        debug!("🔍 Auth cache MISS: firebase_uid={} (querying database)", firebase_uid);
+
+        // Cache miss - query database
+        let user = self.lookup_user(firebase_uid, &country_code, phone_number).await?;
+
+        // Store in cache
+        {
+            let mut cache = self.auth_cache.lock().unwrap();
+            cache.insert(cache_key, CachedAuthResult {
+                user: user.clone(),
+                cached_at: Instant::now(),
+            });
+            debug!(
+                "💾 Auth result cached: firebase_uid={} (cache_size={})",
+                firebase_uid,
+                cache.len()
+            );
+        }
+
+        Ok(user)
     }
 
     /// Authenticate user from Firebase JWT token
@@ -65,6 +142,8 @@ impl AuthenticationService {
     /// - Validates JWT signature and expiration
     /// - Extracts Firebase UID and phone from claims
     /// - Uses same lookup pattern as REST API (with country_code fallback)
+    ///
+    /// 🔥 PERFORMANCE: Results cached for 5 minutes
     pub async fn authenticate_from_token(
         &self,
         firebase_token: &str
@@ -113,8 +192,38 @@ impl AuthenticationService {
 
         info!("🔍 Country code parsed: {}", country_code);
 
-        // 5. Call user service with fallback (same as REST API)
-        self.lookup_user(&firebase_uid, &country_code, &phone_number).await
+        // 5. Check cache (same as REST API)
+        let cache_key = format!("{}:{}", firebase_uid, country_code);
+        {
+            let cache = self.auth_cache.lock().unwrap();
+            if let Some(cached_result) = cache.get(&cache_key) {
+                if cached_result.cached_at.elapsed() < self.cache_ttl {
+                    debug!(
+                        "⚡ Auth cache HIT (WebSocket): firebase_uid={}, age={}ms",
+                        firebase_uid,
+                        cached_result.cached_at.elapsed().as_millis()
+                    );
+                    return Ok(cached_result.user.clone());
+                }
+            }
+        }
+
+        debug!("🔍 Auth cache MISS (WebSocket): firebase_uid={}", firebase_uid);
+
+        // 6. Cache miss - query database with fallback (same as REST API)
+        let user = self.lookup_user(&firebase_uid, &country_code, &phone_number).await?;
+
+        // Store in cache
+        {
+            let mut cache = self.auth_cache.lock().unwrap();
+            cache.insert(cache_key, CachedAuthResult {
+                user: user.clone(),
+                cached_at: Instant::now(),
+            });
+            debug!("💾 Auth result cached (WebSocket): firebase_uid={}", firebase_uid);
+        }
+
+        Ok(user)
     }
 
     /// Shared user lookup logic with country_code fallback
