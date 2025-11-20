@@ -1161,8 +1161,16 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
             Some(geo_service) => {
                 match get_location_from_headers(request.headers(), geo_service).await {
                     Ok(location) => {
-                        debug!(
-                            "Geolocation successful for pre-registration: country={}, city={:?}",
+                        // Extract client IP for logging
+                        let client_ip = crate::common_lib::geolocation
+                            ::extract_client_ip_from_headers(request.headers())
+                            .unwrap_or_else(|| "unknown".to_string());
+
+                        info!(
+                            "Pre-registration geolocation: firebase_uid={}, phone={}, ip={}, country={}, city={:?}",
+                            firebase_user_id,
+                            phone_number,
+                            client_ip,
                             location.country_code,
                             location.city
                         );
@@ -1487,8 +1495,14 @@ impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
             Some(geo_service) => {
                 match get_location_from_headers(request.headers(), geo_service).await {
                     Ok(location) => {
-                        debug!(
-                            "Geolocation successful: country={}, city={:?}",
+                        // Extract client IP for logging
+                        let client_ip = crate::common_lib::geolocation
+                            ::extract_client_ip_from_headers(request.headers())
+                            .unwrap_or_else(|| "unknown".to_string());
+
+                        info!(
+                            "Anonymous registration geolocation: ip={}, country={}, city={:?}",
+                            client_ip,
                             location.country_code,
                             location.city
                         );
