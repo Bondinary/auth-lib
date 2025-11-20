@@ -894,18 +894,6 @@ impl GuardUser {
 
 // === Anonymous Guard ===
 
-// Helper function to extract country_code from query string
-fn extract_country_code_from_query(query_str: &str) -> Option<String> {
-    for param in query_str.split('&') {
-        if let Some((key, value)) = param.split_once('=') {
-            if key == "country_code" {
-                return Some(urlencoding::decode(value).ok()?.into_owned());
-            }
-        }
-    }
-    None
-}
-
 // Helper function to get location via geolocation service
 async fn get_location_via_geolocation(request: &rocket::Request<'_>) -> (String, Option<String>) {
     match request.guard::<&rocket::State<Arc<GeolocationService>>>().await.succeeded() {
