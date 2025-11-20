@@ -26,6 +26,7 @@ use chrono::{ DateTime, Utc };
 use common_lib::constants::{
     INTERNAL_API_KEY,
     GB,
+    GLOBAL,
     X_FIREBASE_UID,
     X_INTERNAL_API_KEY,
     X_PHONE_NUMBER,
@@ -990,7 +991,8 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
             }
         };
 
-        // 4. Call user service for authentication data using geolocation country code
+        // 4. Call user service for authentication data
+        // Try with the detected/provided country_code first, then fallback to GLOBAL for anonymous users
         let auth_url = format!(
             "{}/users/exists?firebase_user_id={}&country_code={}",
             user_service_url,
@@ -999,7 +1001,65 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
         );
 
         let auth_data = match call_user_service(http_client, &auth_url, &expected_api_key).await {
-            Ok(data) => data,
+            Ok(data) => {
+                debug!(
+                    "Anonymous user found with country_code '{}' - firebase_id: {}",
+                    country_code,
+                    firebase_user_id
+                );
+                data
+            }
+            Err(ApiError::BadRequest { message }) if message.contains("User not found") => {
+                // If user not found with geolocation country_code, try with GLOBAL
+                // This handles anonymous users who were registered with country_code="GLOBAL"
+                if country_code != GLOBAL {
+                    debug!(
+                        "User not found with country_code '{}', trying with 'GLOBAL' - firebase_id: {}",
+                        country_code,
+                        firebase_user_id
+                    );
+
+                    let global_auth_url = format!(
+                        "{}/users/exists?firebase_user_id={}&country_code={}",
+                        user_service_url,
+                        urlencoding::encode(&firebase_user_id),
+                        GLOBAL
+                    );
+
+                    match call_user_service(http_client, &global_auth_url, &expected_api_key).await
+                    {
+                        Ok(data) => {
+                            debug!(
+                                "Anonymous user found with GLOBAL country_code - firebase_id: {}",
+                                firebase_user_id
+                            );
+                            // Return success but keep the original detected country_code for location info
+                            data
+                        }
+                        Err(e) => {
+                            debug!(
+                                "Anonymous user not found with either '{}' or 'GLOBAL' - firebase_id: {}",
+                                country_code,
+                                firebase_user_id
+                            );
+                            return Outcome::Error((
+                                Status::from_code(e.status_code()).unwrap_or(
+                                    Status::InternalServerError
+                                ),
+                                e,
+                            ));
+                        }
+                    }
+                } else {
+                    // Already tried with GLOBAL, user doesn't exist
+                    return Outcome::Error((
+                        Status::Unauthorized,
+                        ApiError::Unauthorized {
+                            message: "User not found".to_string(),
+                        },
+                    ));
+                }
+            }
             Err(e) => {
                 return Outcome::Error((
                     Status::from_code(e.status_code()).unwrap_or(Status::InternalServerError),
