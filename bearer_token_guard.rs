@@ -1006,7 +1006,7 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
         Outcome::Success(GuardAnonymous {
             user_id: auth_data.user_id,
             firebase_user_id,
-            country_code: detected_country_code, // Use detected location for display/location info
+            country_code: detected_country_code, // Use detected country_code from geolocation
             city,
         })
     }
