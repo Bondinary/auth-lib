@@ -26,7 +26,6 @@ use chrono::{ DateTime, Utc };
 use common_lib::constants::{
     INTERNAL_API_KEY,
     GB,
-    GLOBAL,
     X_FIREBASE_UID,
     X_INTERNAL_API_KEY,
     X_PHONE_NUMBER,
@@ -962,23 +961,21 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
             }
         };
 
-        // 3.1. Get geolocation for display purposes only
-        // Anonymous users are ALWAYS stored with country_code="GLOBAL" in the database
+        // 3.1. Get geolocation to determine country_code for anonymous user lookup
         let (detected_country_code, city) = get_location_via_geolocation(request).await;
 
         debug!(
-            "Anonymous authentication - firebase_id: {}, detected_location: {} (used for display only)",
+            "Anonymous authentication - firebase_id: {}, detected_country: {}",
             firebase_user_id,
             detected_country_code
         );
 
-        // 4. Call user service for authentication using GLOBAL
-        // All anonymous users are registered with country_code="GLOBAL" regardless of their location
+        // 4. Call user service for authentication using detected country_code
         let auth_url = format!(
             "{}/users/exists?firebase_user_id={}&country_code={}",
             user_service_url,
             urlencoding::encode(&firebase_user_id),
-            GLOBAL
+            urlencoding::encode(&detected_country_code)
         );
 
         let auth_data = match call_user_service(http_client, &auth_url, &expected_api_key).await {
