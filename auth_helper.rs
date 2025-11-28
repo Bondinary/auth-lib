@@ -63,39 +63,39 @@ impl AuthHelper {
         &self,
         token: &str
     ) -> Result<Claims, Box<dyn Error + Send + Sync>> {
-        debug!("Starting Firebase access token validation");
+        debug!("AuthHelper: Starting Firebase access token validation");
         let keys = KEYS.lock().unwrap();
         let header = decode_header(token).map_err(|e| {
-            error!("Failed to decode JWT header: {:?}", e);
+            error!("AuthHelper: Failed to decode JWT header - error: {:?}", e);
             Box::new(e) as Box<dyn Error + Send + Sync>
         })?;
 
         let kid = header.kid.ok_or_else(|| {
-            error!("Missing 'kid' in JWT header");
+            error!("AuthHelper: Missing 'kid' in JWT header");
             Box::new(std::io::Error::new(NotFound, "Missing header key")) as Box<
                 dyn Error + Send + Sync
             >
         })?;
 
-        debug!("Extracted key ID from header: {}", kid);
+        debug!("AuthHelper: Extracted key ID from header '{}'", kid);
 
         let pem_bytes = keys.get(&kid).ok_or_else(|| {
-            error!("No matching key found for kid: {}", kid);
+            error!("AuthHelper: No matching key found for kid '{}'", kid);
             Box::new(std::io::Error::new(NotFound, format!("No key found for kid {kid}"))) as Box<
                 dyn Error + Send + Sync
             >
         })?;
 
         let pub_key_pem = self.extract_public_key_from_certificate(pem_bytes).map_err(|e| {
-            error!("Failed to extract public key for kid {}: {}", kid, e);
+            error!("AuthHelper: Failed to extract public key for kid '{}' - error: {}", kid, e);
             Box::new(
                 std::io::Error::new(InvalidData, format!("Failed to extract public key: {e}"))
             ) as Box<dyn Error + Send + Sync>
         })?;
 
-        debug!("Public key extracted for kid: {}", kid);
+        debug!("AuthHelper: Public key extracted for kid '{}'", kid);
         let decoding_key = DecodingKey::from_rsa_pem(&pub_key_pem).map_err(|e| {
-            error!("Invalid PEM format for key ID {}: {}", kid, e);
+            error!("AuthHelper: Invalid PEM format for key ID '{}' - error: {}", kid, e);
             Box::new(
                 std::io::Error::new(
                     InvalidData,
@@ -114,9 +114,9 @@ impl AuthHelper {
         iss_set.insert(format!("https://securetoken.google.com/{stripped_id}"));
         validation.iss = Some(iss_set.clone());
 
-        debug!("JWT validation rules set with audience: {}", stripped_id);
+        debug!("AuthHelper: JWT validation rules set with audience '{}'", stripped_id);
         let token_data = decode::<Claims>(token, &decoding_key, &validation).map_err(|e| {
-            error!("Error decoding JWT: {:?}", e);
+            error!("AuthHelper: Error decoding JWT - error: {:?}", e);
             Box::new(e) as Box<dyn Error + Send + Sync>
         })?;
 
@@ -163,7 +163,7 @@ impl AuthHelper {
 
     pub async fn get_oauth2_access_token(&self) -> Result<String, Box<dyn Error + Send + Sync>> {
         let service_account = self.load_service_account().await.map_err(|e| {
-            error!("Failed to load Firebase service account for OAuth2 token: {}", e);
+            error!("AuthHelper: Failed to load Firebase service account for OAuth2 token - error: {}", e);
             Box::new(
                 std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -187,12 +187,12 @@ impl AuthHelper {
         };
 
         let key = EncodingKey::from_rsa_pem(service_account.private_key.as_bytes()).map_err(|e| {
-            error!("Failed to create RSA encoding key from service account private key: {}", e);
+            error!("AuthHelper: Failed to create RSA encoding key from service account private key - error: {}", e);
             Box::new(e) as Box<dyn Error + Send + Sync>
         })?;
 
         let jwt = encode(&Header::new(Algorithm::RS256), &claims, &key).map_err(|e| {
-            error!("Failed to encode JWT for OAuth2 request: {}", e);
+            error!("AuthHelper: Failed to encode JWT for OAuth2 request - error: {}", e);
             Box::new(e) as Box<dyn Error + Send + Sync>
         })?;
 
@@ -207,14 +207,18 @@ impl AuthHelper {
             )
             .send().await
             .map_err(|e| {
-                error!("Failed to send OAuth2 token request to Google: {}", e);
+                error!("AuthHelper: Failed to send OAuth2 token request to Google - error: {}", e);
                 Box::new(e) as Box<dyn Error + Send + Sync>
             })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-            error!("OAuth2 token request failed with status {}: {}", status, error_text);
+            error!(
+                "AuthHelper: OAuth2 token request failed with status '{}' - error: {}",
+                status,
+                error_text
+            );
             return Err(
                 Box::new(
                     std::io::Error::new(
@@ -226,14 +230,17 @@ impl AuthHelper {
         }
 
         let token_response: serde_json::Value = response.json().await.map_err(|e| {
-            error!("Failed to parse OAuth2 token response as JSON: {}", e);
+            error!("AuthHelper: Failed to parse OAuth2 token response as JSON - error: {}", e);
             Box::new(e) as Box<dyn Error + Send + Sync>
         })?;
 
         let access_token = token_response["access_token"]
             .as_str()
             .ok_or_else(|| {
-                error!("OAuth2 response missing 'access_token' field: {:?}", token_response);
+                error!(
+                    "AuthHelper: OAuth2 response missing 'access_token' field - error: {:?}",
+                    token_response
+                );
                 Box::new(
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -243,7 +250,7 @@ impl AuthHelper {
             })?
             .to_string();
 
-        debug!("Successfully obtained OAuth2 access token");
+        debug!("AuthHelper: Successfully obtained OAuth2 access token");
         Ok(access_token)
     }
 
@@ -259,11 +266,14 @@ impl AuthHelper {
     pub async fn test_firebase_oauth2(&self) -> Result<bool, Box<dyn Error + Send + Sync>> {
         match self.get_oauth2_access_token().await {
             Ok(token) => {
-                info!("Firebase OAuth2 test successful, token length: {}", token.len());
+                info!(
+                    "AuthHelper: Firebase OAuth2 test successful, token length '{}'",
+                    token.len()
+                );
                 Ok(true)
             }
             Err(e) => {
-                error!("Firebase OAuth2 test failed: {}", e);
+                error!("AuthHelper: Firebase OAuth2 test failed - error: {}", e);
                 Ok(false)
             }
         }
@@ -318,7 +328,7 @@ impl AuthHelper {
                 if let Some(phone_number) = &guard_user.phone_number {
                     request_builder = request_builder.header(X_PHONE_NUMBER, phone_number);
                 } else {
-                    warn!("add_auth_headers: X-Phone-Number not available in GuardUser.");
+                    warn!("AuthHelper: X-Phone-Number not available in GuardUser");
                 }
             }
             GuardUserOrAnonymous::Anonymous(guard_anonymous) => {
@@ -327,7 +337,7 @@ impl AuthHelper {
                     X_FIREBASE_UID,
                     &guard_anonymous.firebase_user_id
                 );
-                debug!("add_auth_headers: Anonymous user - Firebase UID added, no phone number");
+                debug!("AuthHelper: Anonymous user - Firebase UID added, no phone number");
             }
         }
 
@@ -347,7 +357,7 @@ impl AuthHelper {
         if let Some(phone_number) = &guard_user.phone_number {
             request_builder = request_builder.header(X_PHONE_NUMBER, phone_number);
         } else {
-            warn!("add_auth_headers: X-Phone-Number not available in GuardUser.");
+            warn!("AuthHelper: X-Phone-Number not available in GuardUser");
         }
 
         request_builder
@@ -365,10 +375,10 @@ impl AuthHelper {
     ) -> Result<FirebaseServiceAccount, Box<dyn Error + Send + Sync>> {
         // Try base64 environment variable first (for production/AWS deployment)
         if let Ok(base64_credentials) = get_env_var(FIREBASE_CREDENTIALS_BASE64, None) {
-            debug!("Loading Firebase service account from base64 environment variable");
+            debug!("AuthHelper: Loading Firebase service account from base64 environment variable");
             // Decode base64 to get JSON string
             let decoded_bytes = general_purpose::STANDARD.decode(&base64_credentials).map_err(|e| {
-                error!("Failed to decode base64 Firebase credentials: {}", e);
+                error!("AuthHelper: Failed to decode base64 Firebase credentials - error: {}", e);
                 Box::new(
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -378,7 +388,7 @@ impl AuthHelper {
             })?;
 
             let json_string = String::from_utf8(decoded_bytes).map_err(|e| {
-                error!("Failed to convert decoded bytes to UTF-8: {}", e);
+                error!("AuthHelper: Failed to convert decoded bytes to UTF-8 - error: {}", e);
                 Box::new(
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -390,7 +400,7 @@ impl AuthHelper {
             let service_account: FirebaseServiceAccount = serde_json
                 ::from_str(&json_string)
                 .map_err(|e| {
-                    error!("Failed to parse Firebase service account JSON: {}", e);
+                    error!("AuthHelper: Failed to parse Firebase service account JSON - error: {}", e);
                     Box::new(
                         std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
@@ -399,7 +409,9 @@ impl AuthHelper {
                     ) as Box<dyn Error + Send + Sync>
                 })?;
 
-            info!("Successfully loaded Firebase service account from environment variable");
+            info!(
+                "AuthHelper: Successfully loaded Firebase service account from environment variable"
+            );
             return Ok(service_account);
         }
 
@@ -410,11 +422,11 @@ impl AuthHelper {
                 None
             )
         {
-            debug!("Loading Firebase service account from local file: {}", firebase_service_account_path);
+            debug!("AuthHelper: Loading Firebase service account from local file '{}'", firebase_service_account_path);
 
             let mut file = File::open(&firebase_service_account_path).map_err(|e| {
                 error!(
-                    "Failed to open Firebase service account file '{}': {}",
+                    "AuthHelper: Failed to open Firebase service account file '{}' - error: {}",
                     firebase_service_account_path,
                     e
                 );
@@ -423,18 +435,18 @@ impl AuthHelper {
 
             let mut contents = String::new();
             std::io::Read::read_to_string(&mut file, &mut contents).map_err(|e| {
-                error!("Failed to read Firebase service account file: {}", e);
+                error!("AuthHelper: Failed to read Firebase service account file - error: {}", e);
                 Box::new(e) as Box<dyn Error + Send + Sync>
             })?;
 
             let service_account: FirebaseServiceAccount = serde_json
                 ::from_str(&contents)
                 .map_err(|e| {
-                    error!("Failed to parse Firebase service account JSON from file: {}", e);
+                    error!("AuthHelper: Failed to parse Firebase service account JSON from file - error: {}", e);
                     Box::new(e) as Box<dyn Error + Send + Sync>
                 })?;
 
-            info!("Successfully loaded Firebase service account from local file");
+            info!("AuthHelper: Successfully loaded Firebase service account from local file");
             return Ok(service_account);
         }
 
@@ -444,7 +456,7 @@ impl AuthHelper {
             FIREBASE_CREDENTIALS_BASE64,
             LOCAL_FIREBASE_ACCOUNT_SERVICE_JSON_PATH
         );
-        error!("{}", error_msg);
+        error!("AuthHelper: {}", error_msg);
         Err(
             Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, error_msg)) as Box<
                 dyn Error + Send + Sync

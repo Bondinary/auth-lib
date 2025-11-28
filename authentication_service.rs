@@ -66,7 +66,7 @@ impl AuthenticationService {
         let removed = initial_size - cache.len();
         if removed > 0 {
             debug!(
-                "🧹 Cleaned up {} stale auth cache entries (remaining: {})",
+                "AuthenticationService: Cleaned up '{}' stale auth cache entries (remaining: '{}')",
                 removed,
                 cache.len()
             );
@@ -87,11 +87,11 @@ impl AuthenticationService {
         firebase_uid: &str,
         phone_number: &str
     ) -> Result<AuthenticatedUser, ApiError> {
-        debug!("🔐 Authenticating from headers: firebase_uid={}", firebase_uid);
+        debug!("AuthenticationService: Authenticating from headers, firebase_uid '{}'", firebase_uid);
 
         // Parse country code from phone number
         let country_code = CountryService::parse_phone_number_to_country(phone_number).map_err(|e| {
-            error!("❌ Failed to parse country code from phone: {}", e);
+            error!("AuthenticationService: Failed to parse country code from phone - error: {}", e);
             e
         })?;
 
@@ -102,18 +102,18 @@ impl AuthenticationService {
             if let Some(cached_result) = cache.get(&cache_key) {
                 if cached_result.cached_at.elapsed() < self.cache_ttl {
                     debug!(
-                        "⚡ Auth cache HIT: firebase_uid={}, age={}ms (TTL=300s)",
+                        "AuthenticationService: Auth cache HIT for firebase_uid '{}', age '{}ms' (TTL=300s)",
                         firebase_uid,
                         cached_result.cached_at.elapsed().as_millis()
                     );
                     return Ok(cached_result.user.clone());
                 } else {
-                    debug!("⏰ Auth cache EXPIRED: firebase_uid={}", firebase_uid);
+                    debug!("AuthenticationService: Auth cache EXPIRED for firebase_uid '{}'", firebase_uid);
                 }
             }
         }
 
-        debug!("🔍 Auth cache MISS: firebase_uid={} (querying database)", firebase_uid);
+        debug!("AuthenticationService: Auth cache MISS for firebase_uid '{}' (querying database)", firebase_uid);
 
         // Cache miss - query database
         let user = self.lookup_user(firebase_uid, &country_code, phone_number).await?;
@@ -126,7 +126,7 @@ impl AuthenticationService {
                 cached_at: Instant::now(),
             });
             debug!(
-                "💾 Auth result cached: firebase_uid={} (cache_size={})",
+                "AuthenticationService: Auth result cached for firebase_uid '{}' (cache_size: '{}')",
                 firebase_uid,
                 cache.len()
             );
@@ -148,13 +148,13 @@ impl AuthenticationService {
         &self,
         firebase_token: &str
     ) -> Result<AuthenticatedUser, ApiError> {
-        debug!("🔐 Authenticating from JWT token (WebSocket)");
+        debug!("AuthenticationService: Authenticating from JWT token (WebSocket)");
 
         // 1. Validate Firebase JWT
         let claims = self.auth_helper
             .validate_firebase_access_token(firebase_token).await
             .map_err(|e| {
-                error!("❌ JWT validation failed: {}", e);
+                error!("AuthenticationService: JWT validation failed - error: {}", e);
                 ApiError::Unauthorized {
                     message: format!("Invalid Firebase token: {}", e),
                 }
@@ -163,34 +163,36 @@ impl AuthenticationService {
         // 2. Extract Firebase UID from claims
         let firebase_uid = claims.sub.clone();
         if firebase_uid.is_empty() {
-            error!("❌ Firebase UID is empty in token claims");
+            error!("AuthenticationService: Firebase UID is empty in token claims");
             return Err(ApiError::Unauthorized {
                 message: "Firebase UID not found in token".to_string(),
             });
         }
 
-        info!("🔍 Firebase token validated: firebase_uid={}", firebase_uid);
+        info!("AuthenticationService: Firebase token validated for firebase_uid '{}'", firebase_uid);
 
         // 3. Extract phone number from claims (REQUIRED)
         let phone_number = claims.phone_number.clone();
         if phone_number.is_empty() {
-            error!("❌ Phone number missing in token claims - authentication failed");
+            error!(
+                "AuthenticationService: Phone number missing in token claims - authentication failed"
+            );
             return Err(ApiError::Unauthorized {
                 message: "Phone number not found in token claims".to_string(),
             });
         }
 
-        info!("🔍 Phone number extracted from token: {}", phone_number);
+        info!("AuthenticationService: Phone number extracted from token '{}'", phone_number);
 
         // 4. Parse country code from phone (same as REST API)
         let country_code = CountryService::parse_phone_number_to_country(&phone_number).map_err(
             |e| {
-                error!("❌ Failed to parse country code from phone: {}", e);
+                error!("AuthenticationService: Failed to parse country code from phone - error: {}", e);
                 e
             }
         )?;
 
-        info!("🔍 Country code parsed: {}", country_code);
+        info!("AuthenticationService: Country code parsed '{}'", country_code);
 
         // 5. Check cache (same as REST API)
         let cache_key = format!("{}:{}", firebase_uid, country_code);
@@ -199,7 +201,7 @@ impl AuthenticationService {
             if let Some(cached_result) = cache.get(&cache_key) {
                 if cached_result.cached_at.elapsed() < self.cache_ttl {
                     debug!(
-                        "⚡ Auth cache HIT (WebSocket): firebase_uid={}, age={}ms",
+                        "AuthenticationService: Auth cache HIT (WebSocket) for firebase_uid '{}', age '{}ms'",
                         firebase_uid,
                         cached_result.cached_at.elapsed().as_millis()
                     );
@@ -208,7 +210,7 @@ impl AuthenticationService {
             }
         }
 
-        debug!("🔍 Auth cache MISS (WebSocket): firebase_uid={}", firebase_uid);
+        debug!("AuthenticationService: Auth cache MISS (WebSocket) for firebase_uid '{}'", firebase_uid);
 
         // 6. Cache miss - query database with fallback (same as REST API)
         let user = self.lookup_user(&firebase_uid, &country_code, &phone_number).await?;
@@ -220,7 +222,7 @@ impl AuthenticationService {
                 user: user.clone(),
                 cached_at: Instant::now(),
             });
-            debug!("💾 Auth result cached (WebSocket): firebase_uid={}", firebase_uid);
+            debug!("AuthenticationService: Auth result cached (WebSocket) for firebase_uid '{}'", firebase_uid);
         }
 
         Ok(user)
@@ -243,7 +245,7 @@ impl AuthenticationService {
         phone_number: &str
     ) -> Result<AuthenticatedUser, ApiError> {
         info!(
-            "🔍 Looking up user: firebase_uid={}, country={}, phone={}",
+            "AuthenticationService: Looking up user firebase_uid '{}', country '{}', phone '{}'",
             firebase_uid,
             country_code,
             phone_number
@@ -257,21 +259,21 @@ impl AuthenticationService {
             urlencoding::encode(country_code)
         );
 
-        debug!("🔍 Attempt 1: Querying with country_code={}", country_code);
+        debug!("AuthenticationService: Attempt 1 - Querying with country_code '{}'", country_code);
 
         let response = self.http_client
             .get(&url_with_country)
             .header("X-Internal-API-Key", &self.internal_api_key)
             .send().await
             .map_err(|e| {
-                error!("❌ User service request failed: {}", e);
+                error!("AuthenticationService: User service request failed - error: {}", e);
                 ApiError::InternalServerError {
                     message: format!("User service unavailable: {}", e),
                 }
             })?;
 
         if !response.status().is_success() {
-            error!("❌ User service returned error: {}", response.status());
+            error!("AuthenticationService: User service returned error '{}'", response.status());
             return Err(ApiError::InternalServerError {
                 message: format!("User service error: {}", response.status()),
             });
@@ -279,7 +281,7 @@ impl AuthenticationService {
 
         // Deserialize to typed UserExistsResponse (handles camelCase automatically)
         let mut user_response = response.json::<crate::UserExistsResponse>().await.map_err(|e| {
-            error!("❌ Failed to parse user service response: {}", e);
+            error!("AuthenticationService: Failed to parse user service response - error: {}", e);
             ApiError::InternalServerError {
                 message: format!("Invalid user service response: {}", e),
             }
@@ -289,7 +291,7 @@ impl AuthenticationService {
         // If user_id is empty, user not found with this country_code
         if user_response.user_id.is_empty() {
             warn!(
-                "🔄 User not found with country_code={}, retrying without country_code (firebase_uid={})",
+                "AuthenticationService: User not found with country_code '{}', retrying without country_code (firebase_uid: '{}')",
                 country_code,
                 firebase_uid
             );
@@ -300,21 +302,21 @@ impl AuthenticationService {
                 urlencoding::encode(firebase_uid)
             );
 
-            debug!("🔍 Attempt 2: Querying without country_code");
+            debug!("AuthenticationService: Attempt 2 - Querying without country_code");
 
             let fallback_response = self.http_client
                 .get(&url_without_country)
                 .header("X-Internal-API-Key", &self.internal_api_key)
                 .send().await
                 .map_err(|e| {
-                    error!("❌ Fallback user service request failed: {}", e);
+                    error!("AuthenticationService: Fallback user service request failed - error: {}", e);
                     ApiError::InternalServerError {
                         message: format!("Fallback user service unavailable: {}", e),
                     }
                 })?;
 
             if !fallback_response.status().is_success() {
-                error!("❌ Fallback query failed - user not found: {}", firebase_uid);
+                error!("AuthenticationService: Fallback query failed - user not found for firebase_uid '{}'", firebase_uid);
                 return Err(ApiError::Unauthorized {
                     message: "User not found".to_string(),
                 });
@@ -323,7 +325,7 @@ impl AuthenticationService {
             user_response = fallback_response
                 .json::<crate::UserExistsResponse>().await
                 .map_err(|e| {
-                    error!("❌ Failed to parse fallback response: {}", e);
+                    error!("AuthenticationService: Failed to parse fallback response - error: {}", e);
                     ApiError::InternalServerError {
                         message: format!("Invalid fallback response: {}", e),
                     }
@@ -333,7 +335,7 @@ impl AuthenticationService {
         // === Parse authenticated user data from typed response ===
         let user_id = user_response.user_id;
         if user_id.is_empty() {
-            error!("❌ user_id is empty in response");
+            error!("AuthenticationService: user_id is empty in response");
             return Err(ApiError::Unauthorized {
                 message: "User not found".to_string(),
             });
@@ -349,7 +351,7 @@ impl AuthenticationService {
         let roles = user_response.roles;
 
         info!(
-            "✅ User authenticated: user_id={}, firebase_uid={}, role={:?}, country={}",
+            "AuthenticationService: User authenticated - user_id '{}', firebase_uid '{}', role '{:?}', country '{}'",
             user_id,
             firebase_uid,
             user_role,

@@ -72,7 +72,7 @@ pub struct UsersServiceUrl(pub String);
 /// Common API key validation logic used by all guards
 fn validate_internal_api_key(request: &Request<'_>) -> Result<String, ApiError> {
     let expected_api_key = get_env_var(INTERNAL_API_KEY, None).map_err(|e| {
-        error!("INTERNAL_API_KEY environment variable not set: {}", e);
+        error!("BearerTokenGuard: INTERNAL_API_KEY environment variable not set - error: {}", e);
         ApiError::InternalServerError {
             message: "Authentication service misconfigured.".to_string(),
         }
@@ -80,7 +80,7 @@ fn validate_internal_api_key(request: &Request<'_>) -> Result<String, ApiError> 
 
     let provided_api_key = request.headers().get_one(X_INTERNAL_API_KEY);
     if provided_api_key != Some(expected_api_key.as_str()) {
-        warn!("Invalid or missing X-Internal-API-Key");
+        warn!("BearerTokenGuard: Invalid or missing X-Internal-API-Key");
         return Err(ApiError::Unauthorized {
             message: "Unauthorized internal access.".to_string(),
         });
@@ -97,7 +97,7 @@ async fn get_http_dependencies<'a>(
         .guard::<&rocket::State<Arc<reqwest::Client>>>().await
         .succeeded()
         .ok_or_else(|| {
-            error!("HttpClient not available in Rocket state");
+            error!("BearerTokenGuard: HttpClient not available in Rocket state");
             ApiError::InternalServerError {
                 message: "HTTP client not configured.".to_string(),
             }
@@ -107,7 +107,7 @@ async fn get_http_dependencies<'a>(
         .guard::<&rocket::State<UsersServiceUrl>>().await
         .succeeded()
         .ok_or_else(|| {
-            error!("UsersServiceUrl not available in Rocket state");
+            error!("BearerTokenGuard: UsersServiceUrl not available in Rocket state");
             ApiError::InternalServerError {
                 message: "User service URL not configured.".to_string(),
             }
@@ -142,7 +142,7 @@ fn convert_role_strings(role_strings: &[String]) -> HashSet<ClientUserRole> {
                 "Admin" => Some(ClientUserRole::Admin),
                 "ClientAdmin" => Some(ClientUserRole::Admin),
                 _ => {
-                    warn!("GB role: {}", role_str);
+                    warn!("BearerTokenGuard: Unknown role '{}'", role_str);
                     None
                 }
             }
@@ -161,7 +161,7 @@ async fn call_user_service(
         .header(X_INTERNAL_API_KEY, api_key)
         .send().await
         .map_err(|e| {
-            error!("Failed to call User Service: {}", e);
+            error!("BearerTokenGuard: Failed to call User Service - error: {}", e);
             ApiError::InternalServerError {
                 message: "User service unavailable.".to_string(),
             }
@@ -175,7 +175,7 @@ async fn call_user_service(
                     message: "User not found".to_string(),
                 },
             _ => {
-                error!("User Service returned error: {}", status);
+                error!("BearerTokenGuard: User Service returned error '{}'", status);
                 ApiError::InternalServerError {
                     message: format!("User authentication failed: {}", status),
                 }
@@ -184,7 +184,7 @@ async fn call_user_service(
     }
 
     response.json().await.map_err(|e| {
-        error!("Failed to parse User Service response: {}", e);
+        error!("BearerTokenGuard: Failed to parse User Service response - error: {}", e);
         ApiError::InternalServerError {
             message: "Invalid user service response.".to_string(),
         }
@@ -552,7 +552,7 @@ impl GuardUser {
     // Keep deprecated methods for backward compatibility but warn about usage
     pub fn can_perform_action(&self, _permission: &Permission, _context: &ActionContext) -> bool {
         warn!(
-            "Using deprecated can_perform_action without explicit checker. Use can_perform_action_with_checker instead."
+            "GuardUser: Using deprecated can_perform_action without explicit checker - Use can_perform_action_with_checker instead"
         );
         false // Force explicit checker usage
     }
@@ -569,7 +569,7 @@ impl GuardUser {
 
     pub fn get_capabilities(&self, _context: &ActionContext) -> HashSet<Permission> {
         warn!(
-            "Using deprecated get_capabilities without explicit checker. Use get_capabilities_with_checker instead."
+            "GuardUser: Using deprecated get_capabilities without explicit checker - Use get_capabilities_with_checker instead"
         );
         HashSet::new()
     }
@@ -707,7 +707,7 @@ impl<'r> FromRequest<'r> for GuardUser {
     type Error = ApiError;
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        debug!("Attempting user authentication for microservice request.");
+        debug!("GuardUser: Attempting user authentication for microservice request");
 
         // 1. Validate internal API key
         let _expected_api_key = match validate_internal_api_key(request) {
@@ -742,7 +742,7 @@ impl<'r> FromRequest<'r> for GuardUser {
                 let action_description = Self::get_action_description(&endpoint_path);
 
                 info!(
-                    "User with firebase_id {} attempted to access endpoint {} without phone number - registration required",
+                    "GuardUser: User with firebase_id '{}' attempted to access endpoint '{}' without phone number - registration required",
                     firebase_user_id,
                     endpoint_path
                 );
@@ -758,7 +758,9 @@ impl<'r> FromRequest<'r> for GuardUser {
         let auth_service = match request.guard::<&State<Arc<AuthenticationService>>>().await {
             Outcome::Success(service) => service.inner().clone(),
             _ => {
-                error!("❌ AuthenticationService not found in Rocket state - check main.rs wiring");
+                error!(
+                    "GuardUser: AuthenticationService not found in Rocket state - check main.rs wiring"
+                );
                 return Outcome::Error((
                     Status::InternalServerError,
                     ApiError::InternalServerError {
@@ -779,7 +781,7 @@ impl<'r> FromRequest<'r> for GuardUser {
                 let action_description = Self::get_action_description(&endpoint_path);
 
                 info!(
-                    "Unregistered user with firebase_id {} attempted to access endpoint: {}",
+                    "GuardUser: Unregistered user with firebase_id '{}' attempted to access endpoint '{}'",
                     firebase_user_id,
                     endpoint_path
                 );
@@ -803,7 +805,7 @@ impl<'r> FromRequest<'r> for GuardUser {
             let action_description = Self::get_action_description(&endpoint_path);
 
             info!(
-                "Anonymous user {} attempted to access registered-only endpoint: {}",
+                "GuardUser: Anonymous user '{}' attempted to access registered-only endpoint '{}'",
                 auth_user.user_id,
                 endpoint_path
             );
@@ -818,7 +820,7 @@ impl<'r> FromRequest<'r> for GuardUser {
         let roles = convert_role_strings(&auth_user.roles);
 
         info!(
-            "✅ GuardUser authenticated: ID={}, State={:?}, Roles={:?}, Country={}",
+            "GuardUser: User authenticated - ID '{}', State '{:?}', Roles '{:?}', Country '{}'",
             auth_user.user_id,
             auth_user.user_role,
             roles,
@@ -900,20 +902,22 @@ async fn get_location_via_geolocation(request: &rocket::Request<'_>) -> (String,
             match get_location_from_headers(request.headers(), geo_service).await {
                 Ok(location) => {
                     debug!(
-                        "Geolocation successful for anonymous user: country={}, city={:?}",
+                        "GuardAnonymous: Geolocation successful - country '{}', city '{:?}'",
                         location.country_code,
                         location.city
                     );
                     (location.country_code, location.city)
                 }
                 Err(e) => {
-                    warn!("Geolocation failed for anonymous user, using default: {}", e);
+                    warn!("GuardAnonymous: Geolocation failed, using default - error: {}", e);
                     (GB.to_string(), None)
                 }
             }
         }
         _ => {
-            warn!("GeolocationService not available in Rocket state, using default");
+            warn!(
+                "GuardAnonymous: GeolocationService not available in Rocket state, using default"
+            );
             (GB.to_string(), None)
         }
     }
@@ -924,7 +928,7 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
     type Error = ApiError;
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        debug!("Attempting anonymous authentication");
+        debug!("GuardAnonymous: Attempting anonymous authentication");
 
         // 1. Validate internal API key
         let expected_api_key = match validate_internal_api_key(request) {
@@ -965,7 +969,7 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
         let (detected_country_code, city) = get_location_via_geolocation(request).await;
 
         debug!(
-            "Anonymous authentication - firebase_id: {}, detected_country: {}",
+            "GuardAnonymous: Anonymous authentication - firebase_id '{}', detected_country '{}'",
             firebase_user_id,
             detected_country_code
         );
@@ -981,7 +985,7 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
         let auth_data = match call_user_service(http_client, &auth_url, &expected_api_key).await {
             Ok(data) => {
                 debug!(
-                    "Anonymous user authenticated successfully - firebase_id: {}, user_id: {}",
+                    "GuardAnonymous: Anonymous user authenticated successfully - firebase_id '{}', user_id '{}'",
                     firebase_user_id,
                     data.user_id
                 );
@@ -989,7 +993,7 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
             }
             Err(e) => {
                 debug!(
-                    "Anonymous user authentication failed - firebase_id: {}, error: {}",
+                    "GuardAnonymous: Anonymous user authentication failed - firebase_id '{}' - error: {}",
                     firebase_user_id,
                     e
                 );
@@ -1084,7 +1088,7 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
     type Error = ApiError;
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        debug!("Attempting user authentication for pre registration request.");
+        debug!("GuardPreRegistration: Attempting user authentication for pre registration request");
 
         // 1. Validate internal API key
         let expected_api_key = match validate_internal_api_key(request) {
@@ -1159,7 +1163,7 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
                             .unwrap_or_else(|| "unknown".to_string());
 
                         info!(
-                            "Pre-registration geolocation: firebase_uid={}, phone={}, ip={}, country={}, city={:?}",
+                            "GuardPreRegistration: Pre-registration geolocation - firebase_uid '{}', phone '{}', ip '{}', country '{}', city '{:?}'",
                             firebase_user_id,
                             phone_number,
                             client_ip,
@@ -1169,13 +1173,15 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
                         location.country_code
                     }
                     Err(e) => {
-                        warn!("Geolocation failed for pre-registration, using default: {}", e);
+                        warn!("GuardPreRegistration: Geolocation failed, using default - error: {}", e);
                         GB.to_string()
                     }
                 }
             }
             _ => {
-                warn!("GeolocationService not available in Rocket state, using default");
+                warn!(
+                    "GuardPreRegistration: GeolocationService not available in Rocket state, using default"
+                );
                 GB.to_string()
             }
         };
@@ -1195,7 +1201,7 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
                 let endpoint_path = request.uri().path().to_string();
 
                 info!(
-                    "Unregistered user with firebase_id {} attempted to access endpoint: {}",
+                    "GuardPreRegistration: Unregistered user with firebase_id '{}' attempted to access endpoint '{}'",
                     firebase_user_id,
                     endpoint_path
                 );
@@ -1454,7 +1460,7 @@ impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
     type Error = ApiError;
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        debug!("Attempting anonymous registration authentication");
+        debug!("GuardAnonymousRegistration: Attempting anonymous registration authentication");
 
         // 1. Validate internal API key
         match validate_internal_api_key(request) {
@@ -1493,7 +1499,7 @@ impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
                             .unwrap_or_else(|| "unknown".to_string());
 
                         info!(
-                            "Anonymous registration geolocation: ip={}, country={}, city={:?}",
+                            "GuardAnonymousRegistration: Anonymous registration geolocation - ip '{}', country '{}', city '{:?}'",
                             client_ip,
                             location.country_code,
                             location.city
@@ -1501,19 +1507,21 @@ impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
                         (location.country_code, location.city)
                     }
                     Err(e) => {
-                        warn!("Geolocation failed, using default: {}", e);
+                        warn!("GuardAnonymousRegistration: Geolocation failed, using default - error: {}", e);
                         (GB.to_string(), None)
                     }
                 }
             }
             _ => {
-                warn!("GeolocationService not available in Rocket state, using default");
+                warn!(
+                    "GuardAnonymousRegistration: GeolocationService not available in Rocket state, using default"
+                );
                 (GB.to_string(), None)
             }
         };
 
         debug!(
-            "Anonymous registration guard created: firebase_user_id={}, country_code={}, city={:?}",
+            "GuardAnonymousRegistration: Anonymous registration guard created - firebase_user_id '{}', country_code '{}', city '{:?}'",
             firebase_user_id,
             country_code,
             city
