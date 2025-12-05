@@ -774,7 +774,14 @@ impl<'r> FromRequest<'r> for GuardUser {
         let auth_user = match
             auth_service.authenticate_from_headers(&firebase_user_id, &phone_number).await
         {
-            Ok(user) => user,
+            Ok(user) => {
+                debug!(
+                    "GuardUser: Authentication successful - user_id: {}, user_role: {:?}",
+                    user.user_id,
+                    user.user_role
+                );
+                user
+            }
             Err(ApiError::Unauthorized { .. }) => {
                 // User not found - they need to register
                 let endpoint_path = request.uri().path().to_string();
