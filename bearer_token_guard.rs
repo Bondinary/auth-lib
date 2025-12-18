@@ -774,7 +774,14 @@ impl<'r> FromRequest<'r> for GuardUser {
         let auth_user = match
             auth_service.authenticate_from_headers(&firebase_user_id, &phone_number).await
         {
-            Ok(user) => user,
+            Ok(user) => {
+                debug!(
+                    "GuardUser: Authentication successful - user_id: {}, user_role: {:?}",
+                    user.user_id,
+                    user.user_role
+                );
+                user
+            }
             Err(ApiError::Unauthorized { .. }) => {
                 // User not found - they need to register
                 let endpoint_path = request.uri().path().to_string();
@@ -965,21 +972,20 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
             }
         };
 
-        // 3.1. Get geolocation to determine country_code for anonymous user lookup
+        // 3.1. Get geolocation to detect location (for response), but use GLOBAL for database lookup
         let (detected_country_code, city) = get_location_via_geolocation(request).await;
 
         debug!(
-            "GuardAnonymous: Anonymous authentication - firebase_id '{}', detected_country '{}'",
+            "GuardAnonymous: Anonymous authentication - firebase_id '{}', detected_country '{}', lookup_country 'GLOBAL'",
             firebase_user_id,
             detected_country_code
         );
 
-        // 4. Call user service for authentication using detected country_code
+        // 4. Call user service for authentication using GLOBAL (anonymous users always stored with GLOBAL)
         let auth_url = format!(
-            "{}/users/exists?firebase_user_id={}&country_code={}",
+            "{}/users/exists?firebase_user_id={}&country_code=GLOBAL",
             user_service_url,
-            urlencoding::encode(&firebase_user_id),
-            urlencoding::encode(&detected_country_code)
+            urlencoding::encode(&firebase_user_id)
         );
 
         let auth_data = match call_user_service(http_client, &auth_url, &expected_api_key).await {
