@@ -57,7 +57,9 @@ pub const SPARK_EDIT: Capability = "spark:edit";
 
 // Private intent capabilities
 pub const PRIVATE_SPARK_CREATE: Capability = "private_spark:create";
+pub const PRIVATE_SPARK_UPDATE: Capability = "private_spark:update";
 pub const PRIVATE_SPARK_DELETE: Capability = "private_spark:delete";
+pub const PRIVATE_SPARK_DEACTIVATE: Capability = "private_spark:deactivate";
 pub const MATCH_RUN: Capability = "match:run";
 pub const MATCH_VIEW: Capability = "match:view";
 
@@ -72,6 +74,9 @@ pub const MEMBERSHIP_LEAVE: Capability = "membership:leave";
 pub const MEMBERSHIP_GRANT: Capability = "membership:grant";
 pub const MEMBERSHIP_REVOKE: Capability = "membership:revoke";
 pub const MEMBERSHIP_VERIFY: Capability = "membership:verify";
+
+// Email/Verification capabilities
+pub const EMAIL_SEND_VERIFICATION: Capability = "email:send_verification";
 
 // Context capabilities
 pub const CONTEXT_CREATE: Capability = "context:create";
@@ -111,7 +116,9 @@ pub fn all_capabilities() -> Vec<Capability> {
         SPARK_EDIT,
         // Private intents
         PRIVATE_SPARK_CREATE,
+        PRIVATE_SPARK_UPDATE,
         PRIVATE_SPARK_DELETE,
+        PRIVATE_SPARK_DEACTIVATE,
         MATCH_RUN,
         MATCH_VIEW,
         // Check-in
@@ -124,6 +131,8 @@ pub fn all_capabilities() -> Vec<Capability> {
         MEMBERSHIP_GRANT,
         MEMBERSHIP_REVOKE,
         MEMBERSHIP_VERIFY,
+        // Email/Verification
+        EMAIL_SEND_VERIFICATION,
         // Context
         CONTEXT_CREATE,
         CONTEXT_CONFIGURE,
