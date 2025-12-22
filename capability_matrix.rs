@@ -163,6 +163,18 @@ impl CapabilityMatrix {
             ]
         );
 
+        // EMAIL
+        // Email verification happens during join flow, before users have roles in context
+        // Therefore User actor needs Allow (not ContextOnly) permission
+        matrix.insert(
+            EMAIL_SEND_VERIFICATION,
+            vec![
+                CapabilityRule::new(ActorType::User, CapabilityConstraint::Allow),
+                CapabilityRule::new(ActorType::Client, CapabilityConstraint::Allow),
+                CapabilityRule::new(ActorType::System, CapabilityConstraint::Allow)
+            ]
+        );
+
         // MEMBERSHIP
         matrix.insert(
             MEMBERSHIP_JOIN,
