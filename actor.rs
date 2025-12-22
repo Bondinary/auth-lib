@@ -44,12 +44,13 @@ impl ActorType {
 
     /// Get required roles for this actor projection
     /// Returns empty vec for User (always allowed)
+    /// CONTRACT \u00a78.2.1: Role names use PascalCase
     pub fn required_roles(&self) -> Vec<&'static str> {
         match self {
             ActorType::User => vec![],
-            ActorType::Client => vec!["client_admin", "client_owner"],
-            ActorType::Sponsor => vec!["sponsor_rep"],
-            ActorType::AI => vec!["ai_publisher"],
+            ActorType::Client => vec!["ClientAdmin", "ClientOwner"],
+            ActorType::Sponsor => vec!["SponsorRep"],
+            ActorType::AI => vec!["AiPublisher"],
             ActorType::System => vec![], // Requires SystemPrincipal, not role
         }
     }
@@ -103,8 +104,8 @@ mod tests {
     #[test]
     fn test_required_roles() {
         assert_eq!(ActorType::User.required_roles(), Vec::<&str>::new());
-        assert!(ActorType::Client.required_roles().contains(&"client_admin"));
-        assert!(ActorType::Sponsor.required_roles().contains(&"sponsor_rep"));
+        assert!(ActorType::Client.required_roles().contains(&"ClientAdmin"));
+        assert!(ActorType::Sponsor.required_roles().contains(&"SponsorRep"));
     }
 
     #[test]
