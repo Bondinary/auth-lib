@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use backend_domain::{ clients::venue_models::VenueType };
+// use backend_domain::{ clients::venue_models::VenueType }; // REMOVED: Venues replaced by contexts
 use serde::{ Deserialize, Serialize };
 
 use crate::auth_lib::bearer_token_guard::{ GuardUser, GuardUserOrAnonymous };
@@ -22,15 +22,15 @@ pub enum Permission {
     AccessClient, // Access any client services
     ViewClientDetails, // View client information
 
-    // Venue permissions
-    CheckIn, // Check into venues
-    ViewVenueDetails, // View venue information
-    ViewVenueUsers, // See other users in venue
-    CreateVenueContent, // Create content in venue
+    // Context permissions (replacement for venues)
+    CheckIn, // Check into contexts
+    ViewContextDetails, // View context information
+    ViewContextUsers, // See other users in context
+    CreateContextContent, // Create content in context
 
     // Admin permissions
     ManageClient, // Manage client settings
-    ManageVenue, // Manage specific venues
+    ManageContext, // Manage specific contexts
     ManageUsers, // User management
     ViewAnalytics, // Access analytics
     ModerateContent, // Content moderation
@@ -50,18 +50,10 @@ pub enum ActionContext {
         client_id: String,
     },
 
-    // Specific venue context (always belongs to a client)
-    Venue {
-        venue_id: String,
-        venue_type: VenueType,
-        client_id: String, // Parent client that owns this venue
-    },
-
-    // Geographic context for location-based permissions
-    Geographic {
-        countries: Vec<String>,
-        cities: Option<Vec<String>>,
-        venue_types: Option<Vec<VenueType>>,
+    // Specific context (replacement for venues - always belongs to a client)
+    Context {
+        context_id: String,
+        client_id: String, // Parent client that owns this context
     },
 }
 

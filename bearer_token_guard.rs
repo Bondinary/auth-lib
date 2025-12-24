@@ -20,7 +20,7 @@
 // ============================================================================
 
 use backend_domain::UserRole;
-use backend_domain::{ Venue, VenueType };
+// use backend_domain::{ Venue, VenueType }; // REMOVED: Venues replaced by contexts
 use backend_domain::{ AuthType, Client, ClientAuth, ClientUserRole };
 use chrono::{ DateTime, Utc };
 use common_lib::constants::{
@@ -282,8 +282,9 @@ pub struct UserVerifications {
     pub phone_verified_at: Option<DateTime<Utc>>,
     /// Client-level verifications (University, Company, Organization)
     pub client_verifications: Vec<ClientVerification>,
-    /// Venue-specific verifications (for special events, conferences, etc.)
-    pub venue_verifications: Vec<VenueVerification>,
+    // Venue-specific verifications (for special events, conferences, etc.)
+    // REMOVED: Venues replaced by contexts
+    // pub venue_verifications: Vec<VenueVerification>,
 }
 
 /// Client-level verification for organizations, universities, companies
@@ -301,17 +302,18 @@ pub struct ClientVerification {
 }
 
 /// Venue-specific verification for events, conferences, special access
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct VenueVerification {
-    pub venue_id: String, // References Venue.id
-    pub venue_name: String,
-    pub client_id: String, // Parent client of this venue
-    pub venue_type: VenueType, // Campus, CoffeeShop, etc.
-    pub verification_method: VenueVerificationMethod,
-    pub verified_at: DateTime<Utc>,
-    pub expires_at: Option<DateTime<Utc>>, // For temporary access (conferences)
-    pub status: VerificationStatus,
-}
+// REMOVED: Venues replaced by contexts
+// #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+// pub struct VenueVerification {
+//     pub venue_id: String, // References Venue.id
+//     pub venue_name: String,
+//     pub client_id: String, // Parent client of this venue
+//     pub venue_type: VenueType, // Campus, CoffeeShop, etc.
+//     pub verification_method: VenueVerificationMethod,
+//     pub verified_at: DateTime<Utc>,
+//     pub expires_at: Option<DateTime<Utc>>, // For temporary access (conferences)
+//     pub status: VerificationStatus,
+// }
 
 // ============================================================================
 // VERIFICATION ENUMS
@@ -334,17 +336,18 @@ pub enum ClientVerificationMethod {
 }
 
 /// Methods for venue-specific verification
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum VenueVerificationMethod {
-    InheritFromClient, // User has client verification
-    VenueSpecificToken {
-        token: String, // Event/conference specific token
-    },
-    QRCodeScan {
-        qr_data: String,
-    },
-    ProximityBasedCheckin, // Location-based check-in
-}
+// REMOVED: Venues replaced by contexts
+// #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+// pub enum VenueVerificationMethod {
+//     InheritFromClient, // User has client verification
+//     VenueSpecificToken {
+//         token: String, // Event/conference specific token
+//     },
+//     QRCodeScan {
+//         qr_data: String,
+//     },
+//     ProximityBasedCheckin, // Location-based check-in
+// }
 
 /// General verification method types
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -363,17 +366,17 @@ pub enum VerificationStatus {
 }
 
 /// Client access scope configuration
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum ClientScope {
-    AllVenues,
-    SpecificVenues(Vec<String>),
-    VenueTypes(Vec<VenueType>),
-}
+// REMOVED: Venues replaced by contexts
+// #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+// pub enum ClientScope {
+//     AllVenues,
+//     SpecificVenues(Vec<String>),
+//     VenueTypes(Vec<VenueType>),
+// }
 
 // ============================================================================
 // GUARD USER IMPLEMENTATIONS
 // ============================================================================
-
 impl GuardUser {
     /// Check if user can access a specific client (based on existing Client model)
     /// Check if user can access a specific client (based on existing Client model)
@@ -454,7 +457,7 @@ impl GuardUser {
                         cv.client_id == *client.id.as_ref().unwrap_or(&String::new()) &&
                             cv.status == VerificationStatus::Active &&
                             matches!(&cv.verification_method, ClientVerificationMethod::ClientToken { token } 
-                            if token == client_token)
+                            if *token == *client_token)
                     });
             }
         }
@@ -463,20 +466,21 @@ impl GuardUser {
 
     /// Check if user has specific venue verification (for events, conferences)
     /// LOW-LEVEL VERIFICATION CHECK: Venue-specific verification status
-    pub fn has_venue_specific_verification(&self, venue_id: &str) -> bool {
-        if let Some(verifications) = &self.verifications {
-            verifications.venue_verifications
-                .iter()
-                .any(
-                    |vv|
-                        vv.venue_id == venue_id &&
-                        vv.status == VerificationStatus::Active &&
-                        !self.is_venue_verification_expired(vv)
-                )
-        } else {
-            false
-        }
-    }
+    // REMOVED: Venues replaced by contexts
+    // pub fn has_venue_specific_verification(&self, venue_id: &str) -> bool {
+    //     if let Some(verifications) = &self.verifications {
+    //         verifications.venue_verifications
+    //             .iter()
+    //             .any(
+    //                 |vv|
+    //                     vv.venue_id == venue_id &&
+    //                     vv.status == VerificationStatus::Active &&
+    //                     !self.is_venue_verification_expired(vv)
+    //             )
+    //     } else {
+    //         false
+    //     }
+    // }
 
     /// Get user's role within a specific client organization
     /// LOW-LEVEL VERIFICATION CHECK: Role lookup within client
@@ -495,9 +499,10 @@ impl GuardUser {
         if let Some(expires_at) = verification.expires_at { Utc::now() > expires_at } else { false }
     }
 
-    fn is_venue_verification_expired(&self, verification: &VenueVerification) -> bool {
-        if let Some(expires_at) = verification.expires_at { Utc::now() > expires_at } else { false }
-    }
+    // REMOVED: Venues replaced by contexts
+    // fn is_venue_verification_expired(&self, verification: &VenueVerification) -> bool {
+    //     if let Some(expires_at) = verification.expires_at { Utc::now() > expires_at } else { false }
+    // }
 
     /// Check if user can perform action in specific context
     /// HIGH-LEVEL BUSINESS LOGIC: Use PolicyEngine for complex permission evaluation
@@ -579,16 +584,17 @@ impl GuardUser {
         self.roles.contains(role)
     }
 
-    pub fn is_venue_verified(&self, venue_id: &str) -> bool {
-        self.verifications
-            .as_ref()
-            .map(|v|
-                v.venue_verifications
-                    .iter()
-                    .any(|vv| vv.venue_id == venue_id && vv.status == VerificationStatus::Active)
-            )
-            .unwrap_or(false)
-    }
+    // REMOVED: Venues replaced by contexts
+    // pub fn is_venue_verified(&self, venue_id: &str) -> bool {
+    //     self.verifications
+    //         .as_ref()
+    //         .map(|v|
+    //             v.venue_verifications
+    //                 .iter()
+    //                 .any(|vv| vv.venue_id == venue_id && vv.status == VerificationStatus::Active)
+    //         )
+    //         .unwrap_or(false)
+    // }
 
     /// Check if user is phone verified
     pub fn is_phone_verified(&self) -> bool {
@@ -678,26 +684,27 @@ impl UserVerifications {
         Ok(())
     }
 
-    /// Add venue-specific verification (for conferences, special events)
-    pub fn add_venue_specific_verification(
-        &mut self,
-        venue: &Venue,
-        method: VenueVerificationMethod,
-        expires_at: Option<DateTime<Utc>>
-    ) {
-        let verification = VenueVerification {
-            venue_id: venue.id.clone().unwrap_or_default(),
-            venue_name: venue.name.clone(),
-            client_id: venue.client_id.clone(),
-            venue_type: venue.venue_type.clone(),
-            verification_method: method,
-            verified_at: Utc::now(),
-            expires_at,
-            status: VerificationStatus::Active,
-        };
-
-        self.venue_verifications.push(verification);
-    }
+    // Add venue-specific verification (for conferences, special events)
+    // REMOVED: Venues replaced by contexts
+    // pub fn add_venue_specific_verification(
+    //     &mut self,
+    //     venue: &Venue,
+    //     method: VenueVerificationMethod,
+    //     expires_at: Option<DateTime<Utc>>
+    // ) {
+    //     let verification = VenueVerification {
+    //         venue_id: venue.id.clone().unwrap_or_default(),
+    //         venue_name: venue.name.clone(),
+    //         client_id: venue.client_id.clone(),
+    //         venue_type: venue.venue_type.clone(),
+    //         verification_method: method,
+    //         verified_at: Utc::now(),
+    //         expires_at,
+    //         status: VerificationStatus::Active,
+    //     };
+    //
+    //     self.venue_verifications.push(verification);
+    // }
 }
 
 // === Guard Implementations ===
