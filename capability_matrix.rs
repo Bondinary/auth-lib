@@ -256,6 +256,73 @@ impl CapabilityMatrix {
             vec![CapabilityRule::new(ActorType::Client, CapabilityConstraint::SameClientOnly)]
         );
 
+        // ENGAGEMENT - Bookmarks, Comments, Reactions
+        matrix.insert(
+            BOOKMARK_CREATE,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::OwnOnly)]
+        );
+
+        matrix.insert(
+            BOOKMARK_READ,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::OwnOnly)]
+        );
+
+        matrix.insert(
+            COMMENT_CREATE,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::Allow)]
+        );
+
+        matrix.insert(
+            COMMENT_READ,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::Allow)]
+        );
+
+        matrix.insert(
+            COMMENT_UPDATE,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::OwnOnly)]
+        );
+
+        matrix.insert(
+            COMMENT_DELETE,
+            vec![
+                CapabilityRule::new(ActorType::User, CapabilityConstraint::OwnOnly),
+                CapabilityRule::new(ActorType::Client, CapabilityConstraint::Allow),
+                CapabilityRule::new(ActorType::System, CapabilityConstraint::Allow)
+            ]
+        );
+
+        matrix.insert(
+            REACTION_CREATE,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::Allow)]
+        );
+
+        matrix.insert(
+            REACTION_DELETE,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::OwnOnly)]
+        );
+
+        matrix.insert(
+            POLL_VOTE,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::Allow)]
+        );
+
+        // MESSAGES
+        // Messages are between two users - authorization checks sender/receiver match
+        matrix.insert(
+            MESSAGE_CREATE,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::OwnOnly)]
+        );
+
+        matrix.insert(
+            MESSAGE_READ,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::OwnOnly)]
+        );
+
+        matrix.insert(
+            MESSAGE_MARK_READ,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::OwnOnly)]
+        );
+
         // MODERATION
         matrix.insert(
             CONTENT_MODERATE,

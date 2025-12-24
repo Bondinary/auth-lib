@@ -96,6 +96,26 @@ pub const ROLES_VIEW: Capability = "roles:view";
 pub const ANALYTICS_VIEW: Capability = "analytics:view";
 pub const ANALYTICS_EXPORT: Capability = "analytics:export";
 
+// Engagement capabilities (reactions, comments, bookmarks)
+pub const BOOKMARK_CREATE: Capability = "bookmark:create";
+pub const BOOKMARK_READ: Capability = "bookmark:read";
+pub const COMMENT_CREATE: Capability = "comment:create";
+pub const COMMENT_READ: Capability = "comment:read";
+pub const COMMENT_UPDATE: Capability = "comment:update";
+pub const COMMENT_DELETE: Capability = "comment:delete";
+
+// Reactions
+pub const REACTION_CREATE: Capability = "reaction:create";
+pub const REACTION_DELETE: Capability = "reaction:delete";
+
+// Polls
+pub const POLL_VOTE: Capability = "poll:vote";
+
+// Messages
+pub const MESSAGE_CREATE: Capability = "message:create";
+pub const MESSAGE_READ: Capability = "message:read";
+pub const MESSAGE_MARK_READ: Capability = "message:mark_read";
+
 // Moderation capabilities
 pub const CONTENT_MODERATE: Capability = "content:moderate";
 pub const USER_SUSPEND: Capability = "user:suspend";
@@ -148,6 +168,19 @@ pub fn all_capabilities() -> Vec<Capability> {
         // Analytics
         ANALYTICS_VIEW,
         ANALYTICS_EXPORT,
+        // Engagement
+        BOOKMARK_CREATE,
+        BOOKMARK_READ,
+        COMMENT_CREATE,
+        COMMENT_READ,
+        COMMENT_UPDATE,
+        COMMENT_DELETE,
+        REACTION_CREATE,
+        REACTION_DELETE,
+        POLL_VOTE,
+        MESSAGE_CREATE,
+        MESSAGE_READ,
+        MESSAGE_MARK_READ,
         // Moderation
         CONTENT_MODERATE,
         USER_SUSPEND,
@@ -169,6 +202,7 @@ pub enum CapabilityCategory {
     Context,
     Roles,
     Analytics,
+    Engagement,
     Moderation,
     Legacy,
 }
@@ -185,6 +219,13 @@ impl CapabilityCategory {
             cap if cap.starts_with("context:") => Some(CapabilityCategory::Context),
             cap if cap.starts_with("roles:") => Some(CapabilityCategory::Roles),
             cap if cap.starts_with("analytics:") => Some(CapabilityCategory::Analytics),
+            cap if
+                cap.starts_with("bookmark:") ||
+                cap.starts_with("comment:") ||
+                cap.starts_with("poll:") ||
+                cap.starts_with("reaction:")
+            => Some(CapabilityCategory::Engagement),
+            cap if cap.starts_with("message:") => Some(CapabilityCategory::Messaging),
             cap if cap.starts_with("content:") || cap.starts_with("user:") => {
                 Some(CapabilityCategory::Moderation)
             }
