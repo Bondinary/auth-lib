@@ -21,7 +21,7 @@
 
 use backend_domain::UserRole;
 // use backend_domain::{ Venue, VenueType }; // REMOVED: Venues replaced by contexts
-use backend_domain::{ AuthType, Client, ClientAuth, ClientUserRole };
+use backend_domain::{ Client, ClientUserRole };
 use chrono::{ DateTime, Utc };
 use common_lib::constants::{
     INTERNAL_API_KEY,
@@ -399,70 +399,19 @@ impl GuardUser {
         }
     }
 
-    /// Check if user can access a specific venue based on client auth requirements
-    /// LOW-LEVEL VERIFICATION CHECK: Auth requirement validation
-    /// Use this for: Venue entry validation, quick auth checks
-    /// For business logic permissions, use: PolicyEngine.evaluate_permission()
-    pub fn can_access_venue(&self, client: &Client) -> bool {
-        // If client doesn't require auth, anyone can access
-        if let Some(client_auth) = &client.auth {
-            if !client_auth.requires_auth {
-                return true;
-            }
-
-            match client_auth.auth_type {
-                Some(AuthType::None) => true,
-                Some(AuthType::EmailDomain) => {
-                    self.has_client_email_domain_verification(client, client_auth)
-                }
-                Some(AuthType::Token) => { self.has_client_token_verification(client, client_auth) }
-                _ => false,
-            }
-        } else {
-            // No auth config means open access
-            true
-        }
+    /// Check if user can access a specific venue
+    /// NOTE: Client-level auth removed - authorization now handled at Context level via CapabilityMatrix
+    /// This method now always returns true as venue access is controlled through Context capabilities
+    pub fn can_access_venue(&self, _client: &Client) -> bool {
+        // Client-level auth removed - all authorization handled at Context level
+        true
     }
 
     /// Check if user has email domain verification for this client
     /// LOW-LEVEL VERIFICATION CHECK: Email domain verification status
-    fn has_client_email_domain_verification(
-        &self,
-        client: &Client,
-        client_auth: &ClientAuth
-    ) -> bool {
-        if let Some(verifications) = &self.verifications {
-            if let Some(allowed_domains) = &client_auth.allowed_email_domains {
-                return verifications.client_verifications
-                    .iter()
-                    .any(|cv| {
-                        cv.client_id == *client.id.as_ref().unwrap_or(&String::new()) &&
-                            cv.status == VerificationStatus::Active &&
-                            matches!(&cv.verification_method, ClientVerificationMethod::EmailDomain { domain, .. } 
-                            if allowed_domains.iter().any(|ad| domain.ends_with(ad)))
-                    });
-            }
-        }
-        false
-    }
 
     /// Check if user has token verification for this client
     /// LOW-LEVEL VERIFICATION CHECK: Token verification status
-    fn has_client_token_verification(&self, client: &Client, client_auth: &ClientAuth) -> bool {
-        if let Some(verifications) = &self.verifications {
-            if let Some(client_token) = &client_auth.client_token {
-                return verifications.client_verifications
-                    .iter()
-                    .any(|cv| {
-                        cv.client_id == *client.id.as_ref().unwrap_or(&String::new()) &&
-                            cv.status == VerificationStatus::Active &&
-                            matches!(&cv.verification_method, ClientVerificationMethod::ClientToken { token } 
-                            if *token == *client_token)
-                    });
-            }
-        }
-        false
-    }
 
     /// Check if user has specific venue verification (for events, conferences)
     /// LOW-LEVEL VERIFICATION CHECK: Venue-specific verification status
@@ -620,14 +569,8 @@ impl UserVerifications {
             .ok_or("Invalid email format")?
             .to_string();
 
-        // Validate against client's allowed domains
-        if let Some(client_auth) = &client.auth {
-            if let Some(allowed_domains) = &client_auth.allowed_email_domains {
-                if !allowed_domains.iter().any(|domain| email_domain.ends_with(domain)) {
-                    return Err("Email domain not allowed for this client".to_string());
-                }
-            }
-        }
+        // NOTE: Client-level auth removed - domain validation skipped
+        // Authorization handled at Context level via CapabilityMatrix
 
         let verification = ClientVerification {
             client_id: client.id.clone().unwrap_or_default(),
@@ -655,16 +598,8 @@ impl UserVerifications {
         provided_token: String,
         user_role: ClientUserRole
     ) -> Result<(), String> {
-        // Validate token against client's token
-        if let Some(client_auth) = &client.auth {
-            if let Some(client_token) = &client_auth.client_token {
-                if provided_token != *client_token {
-                    return Err("Invalid token for this client".to_string());
-                }
-            } else {
-                return Err("Client does not support token verification".to_string());
-            }
-        }
+        // NOTE: Client-level auth removed - token validation skipped
+        // Authorization handled at Context level via CapabilityMatrix
 
         let verification = ClientVerification {
             client_id: client.id.clone().unwrap_or_default(),
