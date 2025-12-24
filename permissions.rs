@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use backend_domain::{ venues::venue_models::VenueType };
+use backend_domain::{ clients::venue_models::VenueType };
 use serde::{ Deserialize, Serialize };
 
 use crate::auth_lib::bearer_token_guard::{ GuardUser, GuardUserOrAnonymous };
