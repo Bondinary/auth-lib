@@ -51,6 +51,9 @@ impl SystemUserConfig {
             user_id: self.user_id.clone(),
             roles,
             country_code: self.country_code.clone(),
+            home_region: backend_domain::users::users_models::map_country_to_home_region(
+                &self.country_code
+            ),
             firebase_user_id: self.firebase_user_id.clone(),
             phone_number: Some(self.phone_number.clone()),
             city: None, // System users don't have city typically

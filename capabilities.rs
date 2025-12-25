@@ -116,6 +116,20 @@ pub const MESSAGE_CREATE: Capability = "message:create";
 pub const MESSAGE_READ: Capability = "message:read";
 pub const MESSAGE_MARK_READ: Capability = "message:mark_read";
 
+// Notification capabilities
+pub const NOTIFICATION_CREATE: Capability = "notification:create";
+pub const NOTIFICATION_READ: Capability = "notification:read";
+pub const NOTIFICATION_MARK_READ: Capability = "notification:mark_read";
+
+// User profile capabilities
+pub const USER_PROFILE_READ: Capability = "user_profile:read";
+pub const USER_PROFILE_UPDATE: Capability = "user_profile:update";
+pub const USER_PROFILE_DELETE: Capability = "user_profile:delete";
+
+// Connection capabilities
+pub const CONNECTION_CREATE: Capability = "connection:create";
+pub const CONNECTION_VIEW: Capability = "connection:view";
+
 // Moderation capabilities
 pub const CONTENT_MODERATE: Capability = "content:moderate";
 pub const USER_SUSPEND: Capability = "user:suspend";
@@ -181,6 +195,16 @@ pub fn all_capabilities() -> Vec<Capability> {
         MESSAGE_CREATE,
         MESSAGE_READ,
         MESSAGE_MARK_READ,
+        NOTIFICATION_CREATE,
+        NOTIFICATION_READ,
+        NOTIFICATION_MARK_READ,
+        // User Profile
+        USER_PROFILE_READ,
+        USER_PROFILE_UPDATE,
+        USER_PROFILE_DELETE,
+        // Connections
+        CONNECTION_CREATE,
+        CONNECTION_VIEW,
         // Moderation
         CONTENT_MODERATE,
         USER_SUSPEND,
@@ -203,6 +227,9 @@ pub enum CapabilityCategory {
     Roles,
     Analytics,
     Engagement,
+    Messaging,
+    UserProfile,
+    Connection,
     Moderation,
     Legacy,
 }
@@ -225,7 +252,11 @@ impl CapabilityCategory {
                 cap.starts_with("poll:") ||
                 cap.starts_with("reaction:")
             => Some(CapabilityCategory::Engagement),
-            cap if cap.starts_with("message:") => Some(CapabilityCategory::Messaging),
+            cap if cap.starts_with("message:") || cap.starts_with("notification:") => {
+                Some(CapabilityCategory::Messaging)
+            }
+            cap if cap.starts_with("user_profile:") => Some(CapabilityCategory::UserProfile),
+            cap if cap.starts_with("connection:") => Some(CapabilityCategory::Connection),
             cap if cap.starts_with("content:") || cap.starts_with("user:") => {
                 Some(CapabilityCategory::Moderation)
             }

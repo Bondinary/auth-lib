@@ -358,6 +358,17 @@ impl CapabilityMatrix {
             vec![CapabilityRule::new(ActorType::Client, CapabilityConstraint::ContextOnly)]
         );
 
+        // CONNECTIONS
+        matrix.insert(
+            CONNECTION_CREATE,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::Allow)]
+        );
+
+        matrix.insert(
+            CONNECTION_VIEW,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::Allow)]
+        );
+
         // LEGACY - For gradual migration
         matrix.insert(
             LEGACY_ALLOW,

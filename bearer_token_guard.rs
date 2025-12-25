@@ -237,6 +237,7 @@ pub struct GuardUser {
     pub firebase_user_id: String,
     pub phone_number: Option<String>,
     pub country_code: String,
+    pub home_region: backend_domain::users::users_models::HomeRegion, // Derived from country_code
     pub city: Option<String>,
     pub user_role: Option<UserRole>,
     pub roles: HashSet<ClientUserRole>,
@@ -779,8 +780,11 @@ impl<'r> FromRequest<'r> for GuardUser {
         Outcome::Success(GuardUser {
             user_id: auth_user.user_id,
             firebase_user_id: auth_user.firebase_user_id,
-            phone_number: Some(auth_user.phone_number),
-            country_code: auth_user.country_code,
+            phone_number: Some(auth_user.phone_number.clone()),
+            country_code: auth_user.country_code.clone(),
+            home_region: backend_domain::users::users_models::map_country_to_home_region(
+                &auth_user.country_code
+            ),
             city: None, // GuardUser uses country from phone number, city not needed
             user_role: auth_user.user_role,
             roles,
