@@ -323,6 +323,28 @@ impl CapabilityMatrix {
             vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::OwnOnly)]
         );
 
+        // NOTIFICATIONS
+        // System-generated notifications (e.g., match found, message received)
+        // Users can only read/manage their own notifications
+        // Creation is typically system-initiated but can be done by clients
+        matrix.insert(
+            NOTIFICATION_CREATE,
+            vec![
+                CapabilityRule::new(ActorType::System, CapabilityConstraint::Allow),
+                CapabilityRule::new(ActorType::Client, CapabilityConstraint::Allow)
+            ]
+        );
+
+        matrix.insert(
+            NOTIFICATION_READ,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::OwnOnly)]
+        );
+
+        matrix.insert(
+            NOTIFICATION_MARK_READ,
+            vec![CapabilityRule::new(ActorType::User, CapabilityConstraint::OwnOnly)]
+        );
+
         // MODERATION
         matrix.insert(
             CONTENT_MODERATE,
