@@ -23,18 +23,10 @@ use backend_domain::UserRole;
 // use backend_domain::{ Venue, VenueType }; // REMOVED: Venues replaced by contexts
 use backend_domain::{ Client, ClientUserRole };
 use chrono::{ DateTime, Utc };
-use common_lib::constants::{
-    INTERNAL_API_KEY,
-    GB,
-    X_FIREBASE_UID,
-    X_INTERNAL_API_KEY,
-    X_PHONE_NUMBER,
-};
+use common_lib::constants::{ INTERNAL_API_KEY, X_FIREBASE_UID, X_INTERNAL_API_KEY, X_PHONE_NUMBER };
 use common_lib::error::ApiError;
 use common_lib::utils::get_env_var;
 use crate::auth_lib::authentication_service::AuthenticationService;
-use crate::common_lib::country_utils::CountryService;
-use crate::common_lib::geolocation::{ GeolocationService, get_location_from_headers };
 use rocket::http::Status;
 use rocket::request::{ FromRequest, Outcome, Request };
 use rocket::State;
@@ -116,40 +108,6 @@ async fn get_http_dependencies<'a>(
     Ok((http_client, &user_service_url.0))
 }
 
-/// Convert role strings from API to ClientUserRole enums
-fn convert_role_strings(role_strings: &[String]) -> HashSet<ClientUserRole> {
-    role_strings
-        .iter()
-        .filter_map(|role_str| {
-            match role_str.as_str() {
-                // University roles
-                "Student" => Some(ClientUserRole::Student),
-                "UniversityStaff" => Some(ClientUserRole::Staff),
-                "Alumni" => Some(ClientUserRole::Alumni),
-                // Coffee shop roles
-                "CoffeeShopAttendee" => Some(ClientUserRole::CoffeeShopAttendee),
-                "CoffeeShopManager" => Some(ClientUserRole::CoffeeShopManager),
-                // Coworking space roles
-                "CoworkingSpaceAttendee" => Some(ClientUserRole::CoworkingSpaceAttendee),
-                "CoworkingSpaceManager" => Some(ClientUserRole::CoworkingSpaceManager),
-                // Conference roles
-                "ConferenceAttendee" => Some(ClientUserRole::ConferenceAttendee),
-                "ConferenceSpeaker" => Some(ClientUserRole::ConferenceSpeaker),
-                // General roles
-                "Guest" => Some(ClientUserRole::Guest),
-                "Sponsor" => Some(ClientUserRole::Sponsor),
-                "System" => Some(ClientUserRole::System),
-                "Admin" => Some(ClientUserRole::Admin),
-                "ClientAdmin" => Some(ClientUserRole::Admin),
-                _ => {
-                    warn!("BearerTokenGuard: Unknown role '{}'", role_str);
-                    None
-                }
-            }
-        })
-        .collect()
-}
-
 /// Call user service and handle common response patterns
 async fn call_user_service(
     http_client: &reqwest::Client,
@@ -226,8 +184,6 @@ fn create_firebase_uid_scheme(description: &str) -> SecurityScheme {
 pub struct GuardAnonymous {
     pub user_id: String,
     pub firebase_user_id: String,
-    pub country_code: String,
-    pub city: Option<String>,
 }
 
 /// Guard for authenticated users with full access and verification status
@@ -236,12 +192,8 @@ pub struct GuardUser {
     pub user_id: String,
     pub firebase_user_id: String,
     pub phone_number: Option<String>,
-    pub country_code: String,
-    pub home_region: backend_domain::users::users_models::HomeRegion, // Derived from country_code
-    pub city: Option<String>,
+    pub home_region: Option<String>,
     pub user_role: Option<UserRole>,
-    pub roles: HashSet<ClientUserRole>,
-    pub verifications: Option<UserVerifications>,
 }
 
 /// Flexible guard that accepts either authenticated or anonymous users
@@ -255,8 +207,6 @@ pub enum GuardUserOrAnonymous {
 #[derive(Debug, Clone)]
 pub struct GuardAnonymousRegistration {
     pub firebase_user_id: String,
-    pub country_code: String,
-    pub city: Option<String>,
 }
 
 /// Guard for pre-registration validation
@@ -265,7 +215,6 @@ pub struct GuardPreRegistration {
     pub user_id: String,
     pub firebase_user_id: String,
     pub phone_number: Option<String>,
-    pub country_code: String,
 }
 
 /// Guard for internal service-to-service authentication
@@ -379,27 +328,6 @@ pub enum VerificationStatus {
 // GUARD USER IMPLEMENTATIONS
 // ============================================================================
 impl GuardUser {
-    /// Check if user can access a specific client (based on existing Client model)
-    /// Check if user can access a specific client (based on existing Client model)
-    /// LOW-LEVEL VERIFICATION CHECK: Direct verification status validation
-    /// Use this for: Quick verification status checks, audit trails, debugging
-    /// For business logic permissions, use: PolicyEngine.evaluate_permission()
-    pub fn can_access_client(&self, client: &Client) -> bool {
-        if let Some(verifications) = &self.verifications {
-            // Check if user has verification for this client
-            verifications.client_verifications
-                .iter()
-                .any(
-                    |cv|
-                        cv.client_id == *client.id.as_ref().unwrap_or(&String::new()) &&
-                        cv.status == VerificationStatus::Active &&
-                        !self.is_client_verification_expired(cv)
-                )
-        } else {
-            false
-        }
-    }
-
     /// Check if user can access a specific venue
     /// NOTE: Client-level auth removed - authorization now handled at Context level via CapabilityMatrix
     /// This method now always returns true as venue access is controlled through Context capabilities
@@ -432,28 +360,6 @@ impl GuardUser {
     //     }
     // }
 
-    /// Get user's role within a specific client organization
-    /// LOW-LEVEL VERIFICATION CHECK: Role lookup within client
-    pub fn get_client_role(&self, client_id: &str) -> Option<ClientUserRole> {
-        if let Some(verifications) = &self.verifications {
-            verifications.client_verifications
-                .iter()
-                .find(|cv| cv.client_id == client_id && cv.status == VerificationStatus::Active)
-                .map(|cv| cv.user_role.clone())
-        } else {
-            None
-        }
-    }
-
-    fn is_client_verification_expired(&self, verification: &ClientVerification) -> bool {
-        if let Some(expires_at) = verification.expires_at { Utc::now() > expires_at } else { false }
-    }
-
-    // REMOVED: Venues replaced by contexts
-    // fn is_venue_verification_expired(&self, verification: &VenueVerification) -> bool {
-    //     if let Some(expires_at) = verification.expires_at { Utc::now() > expires_at } else { false }
-    // }
-
     /// Check if user can perform action in specific context
     /// HIGH-LEVEL BUSINESS LOGIC: Use PolicyEngine for complex permission evaluation
     /// Example: "Can this student create content during exam period?"
@@ -480,12 +386,11 @@ impl GuardUser {
         if !self.can_perform_action_with_checker(permission, context, checker) {
             return Err(ApiError::Unauthorized {
                 message: format!(
-                    "User {} lacks permission {:?} in context {:?}. Current state: {:?}, roles: {:?}",
+                    "User {} lacks permission {:?} in context {:?}. Current state: {:?}",
                     self.user_id,
                     permission,
                     context,
-                    self.user_role,
-                    self.roles
+                    self.user_role
                 ),
             });
         }
@@ -529,11 +434,6 @@ impl GuardUser {
         HashSet::new()
     }
 
-    /// Check if user has specific role
-    pub fn has_role(&self, role: &ClientUserRole) -> bool {
-        self.roles.contains(role)
-    }
-
     // REMOVED: Venues replaced by contexts
     // pub fn is_venue_verified(&self, venue_id: &str) -> bool {
     //     self.verifications
@@ -545,15 +445,9 @@ impl GuardUser {
     //         )
     //         .unwrap_or(false)
     // }
-
-    /// Check if user is phone verified
-    pub fn is_phone_verified(&self) -> bool {
-        self.verifications
-            .as_ref()
-            .map(|v| v.phone_verified)
-            .unwrap_or(false)
-    }
 }
+
+// Verification-related methods removed - verifications field no longer exists
 
 impl UserVerifications {
     /// Add client verification using email domain (for universities, companies)
@@ -766,29 +660,18 @@ impl<'r> FromRequest<'r> for GuardUser {
             ));
         }
 
-        // 7. Convert string roles to enum roles
-        let roles = convert_role_strings(&auth_user.roles);
-
         info!(
-            "GuardUser: User authenticated - ID '{}', State '{:?}', Roles '{:?}', Country '{}'",
+            "GuardUser: User authenticated - ID '{}', State '{:?}'",
             auth_user.user_id,
-            auth_user.user_role,
-            roles,
-            auth_user.country_code
+            auth_user.user_role
         );
 
         Outcome::Success(GuardUser {
             user_id: auth_user.user_id,
             firebase_user_id: auth_user.firebase_user_id,
             phone_number: Some(auth_user.phone_number.clone()),
-            country_code: auth_user.country_code.clone(),
-            home_region: backend_domain::users::users_models::map_country_to_home_region(
-                &auth_user.country_code
-            ),
-            city: None, // GuardUser uses country from phone number, city not needed
+            home_region: None, // home_region not available from auth_user
             user_role: auth_user.user_role,
-            roles,
-            verifications: None,
         })
     }
 }
@@ -848,34 +731,6 @@ impl GuardUser {
 
 // === Anonymous Guard ===
 
-// Helper function to get location via geolocation service
-async fn get_location_via_geolocation(request: &rocket::Request<'_>) -> (String, Option<String>) {
-    match request.guard::<&rocket::State<Arc<GeolocationService>>>().await.succeeded() {
-        Some(geo_service) => {
-            match get_location_from_headers(request.headers(), geo_service).await {
-                Ok(location) => {
-                    debug!(
-                        "GuardAnonymous: Geolocation successful - country '{}', city '{:?}'",
-                        location.country_code,
-                        location.city
-                    );
-                    (location.country_code, location.city)
-                }
-                Err(e) => {
-                    warn!("GuardAnonymous: Geolocation failed, using default - error: {}", e);
-                    (GB.to_string(), None)
-                }
-            }
-        }
-        _ => {
-            warn!(
-                "GuardAnonymous: GeolocationService not available in Rocket state, using default"
-            );
-            (GB.to_string(), None)
-        }
-    }
-}
-
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for GuardAnonymous {
     type Error = ApiError;
@@ -918,14 +773,7 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
             }
         };
 
-        // 3.1. Get geolocation to detect location (for response), but use GLOBAL for database lookup
-        let (detected_country_code, city) = get_location_via_geolocation(request).await;
-
-        debug!(
-            "GuardAnonymous: Anonymous authentication - firebase_id '{}', detected_country '{}', lookup_country 'GLOBAL'",
-            firebase_user_id,
-            detected_country_code
-        );
+        debug!("GuardAnonymous: Anonymous authentication - firebase_id '{}'", firebase_user_id);
 
         // 4. Call user service for authentication using GLOBAL (anonymous users always stored with GLOBAL)
         let auth_url = format!(
@@ -959,8 +807,6 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
         Outcome::Success(GuardAnonymous {
             user_id: auth_data.user_id,
             firebase_user_id,
-            country_code: detected_country_code, // Use detected country_code from geolocation
-            city,
         })
     }
 }
@@ -1078,20 +924,7 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
             }
         };
 
-        // 3. Parse country code from phone
-        let country_code_from_phone_number = match
-            CountryService::parse_phone_number_to_country(&phone_number)
-        {
-            Ok(cc) => cc,
-            Err(e) => {
-                return Outcome::Error((
-                    Status::from_code(e.status_code()).unwrap_or(Status::BadRequest),
-                    e,
-                ));
-            }
-        };
-
-        // 4. Get HTTP dependencies
+        // 3. Get HTTP dependencies
         let (http_client, user_service_url) = match get_http_dependencies(request).await {
             Ok(deps) => deps,
             Err(e) => {
@@ -1102,48 +935,11 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
             }
         };
 
-        // 4.1. Get country code using IP geolocation
-        let country_code_from_geolocation = match
-            request.guard::<&rocket::State<Arc<GeolocationService>>>().await.succeeded()
-        {
-            Some(geo_service) => {
-                match get_location_from_headers(request.headers(), geo_service).await {
-                    Ok(location) => {
-                        // Extract client IP for logging
-                        let client_ip = crate::common_lib::geolocation
-                            ::extract_client_ip_from_headers(request.headers())
-                            .unwrap_or_else(|| "unknown".to_string());
-
-                        info!(
-                            "GuardPreRegistration: Pre-registration geolocation - firebase_uid '{}', phone '{}', ip '{}', country '{}', city '{:?}'",
-                            firebase_user_id,
-                            phone_number,
-                            client_ip,
-                            location.country_code,
-                            location.city
-                        );
-                        location.country_code
-                    }
-                    Err(e) => {
-                        warn!("GuardPreRegistration: Geolocation failed, using default - error: {}", e);
-                        GB.to_string()
-                    }
-                }
-            }
-            _ => {
-                warn!(
-                    "GuardPreRegistration: GeolocationService not available in Rocket state, using default"
-                );
-                GB.to_string()
-            }
-        };
-
-        // 5. Call user service for authentication data using geolocation country code
+        // 4. Call user service for authentication data using GLOBAL
         let auth_url = format!(
-            "{}/users/exists?firebase_user_id={}&country_code={}",
+            "{}/users/exists?firebase_user_id={}&country_code=GLOBAL",
             user_service_url,
-            urlencoding::encode(&firebase_user_id),
-            urlencoding::encode(&country_code_from_geolocation)
+            urlencoding::encode(&firebase_user_id)
         );
 
         let auth_data = match call_user_service(http_client, &auth_url, &expected_api_key).await {
@@ -1175,7 +971,6 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
             user_id: auth_data.user_id,
             firebase_user_id,
             phone_number: Some(phone_number),
-            country_code: country_code_from_phone_number,
         })
     }
 }
@@ -1438,52 +1233,11 @@ impl<'r> FromRequest<'r> for GuardAnonymousRegistration {
             }
         };
 
-        // 3. Get country code and city using IP geolocation
-        let (country_code, city) = match
-            request.guard::<&rocket::State<Arc<GeolocationService>>>().await.succeeded()
-        {
-            Some(geo_service) => {
-                match get_location_from_headers(request.headers(), geo_service).await {
-                    Ok(location) => {
-                        // Extract client IP for logging
-                        let client_ip = crate::common_lib::geolocation
-                            ::extract_client_ip_from_headers(request.headers())
-                            .unwrap_or_else(|| "unknown".to_string());
-
-                        info!(
-                            "GuardAnonymousRegistration: Anonymous registration geolocation - ip '{}', country '{}', city '{:?}'",
-                            client_ip,
-                            location.country_code,
-                            location.city
-                        );
-                        (location.country_code, location.city)
-                    }
-                    Err(e) => {
-                        warn!("GuardAnonymousRegistration: Geolocation failed, using default - error: {}", e);
-                        (GB.to_string(), None)
-                    }
-                }
-            }
-            _ => {
-                warn!(
-                    "GuardAnonymousRegistration: GeolocationService not available in Rocket state, using default"
-                );
-                (GB.to_string(), None)
-            }
-        };
-
-        debug!(
-            "GuardAnonymousRegistration: Anonymous registration guard created - firebase_user_id '{}', country_code '{}', city '{:?}'",
-            firebase_user_id,
-            country_code,
-            city
-        );
+        debug!("GuardAnonymousRegistration: Anonymous registration guard created - firebase_user_id '{}'", firebase_user_id);
 
         // No database lookup - just validate headers for registration
         Outcome::Success(GuardAnonymousRegistration {
             firebase_user_id,
-            country_code,
-            city,
         })
     }
 }

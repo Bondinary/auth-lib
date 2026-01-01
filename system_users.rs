@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-use backend_domain::ClientUserRole;
 use common_lib::{
     constants::{
         SYSTEM_USER_COUNTRY_CODE,
@@ -44,21 +42,12 @@ impl SystemUserConfig {
 
     /// Convert SystemUserConfig to GuardUser for service initialization
     pub fn to_guard_user(&self) -> GuardUser {
-        let mut roles = HashSet::new();
-        roles.insert(ClientUserRole::System);
-
         GuardUser {
             user_id: self.user_id.clone(),
-            roles,
-            country_code: self.country_code.clone(),
-            home_region: backend_domain::users::users_models::map_country_to_home_region(
-                &self.country_code
-            ),
             firebase_user_id: self.firebase_user_id.clone(),
             phone_number: Some(self.phone_number.clone()),
-            city: None, // System users don't have city typically
+            home_region: Some(self.country_code.clone()),
             user_role: None,
-            verifications: None,
         }
     }
 
