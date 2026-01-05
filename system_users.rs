@@ -45,8 +45,6 @@ impl SystemUserConfig {
         GuardUser {
             user_id: self.user_id.clone(),
             firebase_user_id: self.firebase_user_id.clone(),
-            phone_number: Some(self.phone_number.clone()),
-            home_region: Some(self.country_code.clone()),
             user_role: None,
         }
     }

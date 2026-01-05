@@ -319,25 +319,19 @@ impl AuthHelper {
 
         match guard_user_or_anonymous {
             GuardUserOrAnonymous::User(guard_user) => {
-                // For authenticated users, add both Firebase UID and phone number
+                // For authenticated users, add Firebase UID
                 request_builder = request_builder.header(
                     X_FIREBASE_UID,
                     &guard_user.firebase_user_id
                 );
-
-                if let Some(phone_number) = &guard_user.phone_number {
-                    request_builder = request_builder.header(X_PHONE_NUMBER, phone_number);
-                } else {
-                    warn!("AuthHelper: X-Phone-Number not available in GuardUser");
-                }
             }
             GuardUserOrAnonymous::Anonymous(guard_anonymous) => {
-                // For anonymous users, only add Firebase UID (no phone number)
+                // For anonymous users, add Firebase UID
                 request_builder = request_builder.header(
                     X_FIREBASE_UID,
                     &guard_anonymous.firebase_user_id
                 );
-                debug!("AuthHelper: Anonymous user - Firebase UID added, no phone number");
+                debug!("AuthHelper: Anonymous user - Firebase UID added");
             }
         }
 
@@ -351,14 +345,8 @@ impl AuthHelper {
     ) -> RequestBuilder {
         request_builder = request_builder.header(X_INTERNAL_API_KEY, internal_api_key);
 
-        // For authenticated users, add both Firebase UID and phone number
+        // For authenticated users, add Firebase UID
         request_builder = request_builder.header(X_FIREBASE_UID, &guard_user.firebase_user_id);
-
-        if let Some(phone_number) = &guard_user.phone_number {
-            request_builder = request_builder.header(X_PHONE_NUMBER, phone_number);
-        } else {
-            warn!("AuthHelper: X-Phone-Number not available in GuardUser");
-        }
 
         request_builder
     }

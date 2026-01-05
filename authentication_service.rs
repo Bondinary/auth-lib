@@ -135,6 +135,117 @@ impl AuthenticationService {
         Ok(user)
     }
 
+    /// Authenticate user from Firebase UID only (email-based authentication)
+    ///
+    /// Used by: GuardUser (REST APIs) for email-only authentication
+    /// - Receives Firebase UID from X-Firebase-UID header (already validated by API Gateway)
+    /// - No phone number required
+    /// - No JWT validation needed
+    ///
+    /// 🔥 PERFORMANCE: Results cached for 5 minutes
+    pub async fn authenticate_from_firebase_uid(
+        &self,
+        firebase_uid: &str
+    ) -> Result<AuthenticatedUser, ApiError> {
+        debug!("AuthenticationService: Authenticating from Firebase UID only, firebase_uid '{}'", firebase_uid);
+
+        // Check cache first (using firebase_uid as key)
+        let cache_key = format!("uid:{}", firebase_uid);
+        {
+            let cache = self.auth_cache.lock().unwrap();
+            if let Some(cached_result) = cache.get(&cache_key) {
+                if cached_result.cached_at.elapsed() < self.cache_ttl {
+                    debug!(
+                        "AuthenticationService: Auth cache HIT for firebase_uid '{}', age '{}ms' (TTL=300s)",
+                        firebase_uid,
+                        cached_result.cached_at.elapsed().as_millis()
+                    );
+                    return Ok(cached_result.user.clone());
+                } else {
+                    debug!("AuthenticationService: Auth cache EXPIRED for firebase_uid '{}'", firebase_uid);
+                }
+            }
+        }
+
+        debug!("AuthenticationService: Auth cache MISS for firebase_uid '{}' (querying database)", firebase_uid);
+
+        // Cache miss - query user service by Firebase UID only
+        let url = format!(
+            "{}/internal/users/check-user-exists-firebase-uid/{}",
+            self.users_service_url,
+            firebase_uid
+        );
+
+        let response = self.http_client
+            .get(&url)
+            .header("X-Internal-API-Key", &self.internal_api_key)
+            .send().await
+            .map_err(|e| {
+                error!("AuthenticationService: Failed to call user service - error: {}", e);
+                ApiError::InternalServerError {
+                    message: format!("Failed to authenticate user: {}", e),
+                }
+            })?;
+
+        if !response.status().is_success() {
+            if response.status().as_u16() == 404 {
+                info!("AuthenticationService: User not found for firebase_uid '{}'", firebase_uid);
+                return Err(ApiError::Unauthorized {
+                    message: "User not found".to_string(),
+                });
+            }
+
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            error!(
+                "AuthenticationService: User service returned error {} - {}",
+                status,
+                error_text
+            );
+            return Err(ApiError::InternalServerError {
+                message: format!("Authentication failed: {}", error_text),
+            });
+        }
+
+        let user_response: crate::UserExistsResponse = response.json().await.map_err(|e| {
+            error!("AuthenticationService: Failed to parse user response - error: {}", e);
+            ApiError::InternalServerError {
+                message: format!("Failed to parse authentication response: {}", e),
+            }
+        })?;
+
+        // Create authenticated user (phone_number not required for email-based auth)
+        let auth_user = AuthenticatedUser {
+            user_id: user_response.user_id.clone(),
+            firebase_user_id: firebase_uid.to_string(),
+            phone_number: String::new(), // Empty for email-only auth
+            user_role: Some(user_response.user_role),
+            country_code: String::new(), // Not needed for email-only auth
+        };
+
+        info!(
+            "AuthenticationService: User authenticated via Firebase UID - user_id: '{}', user_role: {:?}",
+            user_response.user_id,
+            auth_user.user_role
+        );
+
+        // Store in cache
+        {
+            let mut cache = self.auth_cache.lock().unwrap();
+            cache.insert(cache_key, CachedAuthResult {
+                user: auth_user.clone(),
+                cached_at: Instant::now(),
+            });
+            debug!(
+                "AuthenticationService: Auth result cached for firebase_uid '{}' (cache_size: '{}')",
+                firebase_uid,
+                cache.len()
+            );
+        }
+
+        Ok(auth_user)
+    }
+
     /// Authenticate user from Firebase JWT token
     ///
     /// Used by: WebSocket handler
@@ -348,7 +459,6 @@ impl AuthenticationService {
         let country_code_final = country_code.to_string();
 
         let user_role = Some(user_response.user_role);
-        let roles = user_response.roles;
 
         info!(
             "AuthenticationService: User authenticated - user_id '{}', firebase_uid '{}', role '{:?}', country '{}'",
@@ -363,7 +473,6 @@ impl AuthenticationService {
             firebase_user_id: firebase_uid.to_string(),
             phone_number: phone_number_final,
             user_role,
-            roles,
             country_code: country_code_final, // ✅ From parsed phone number, not DB
         })
     }
@@ -376,7 +485,6 @@ impl AuthenticationService {
 /// - firebase_user_id: Firebase UID (for cross-service calls)
 /// - phone_number: User's phone number
 /// - user_role: Primary role (Registered/Anonymous)
-/// - roles: Additional role strings
 /// - country_code: Parsed country code (for sharding)
 #[derive(Debug, Clone)]
 pub struct AuthenticatedUser {
@@ -384,6 +492,5 @@ pub struct AuthenticatedUser {
     pub firebase_user_id: String,
     pub phone_number: String,
     pub user_role: Option<UserRole>,
-    pub roles: Vec<String>,
     pub country_code: String,
 }

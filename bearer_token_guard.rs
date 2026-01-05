@@ -191,9 +191,30 @@ pub struct GuardAnonymous {
 pub struct GuardUser {
     pub user_id: String,
     pub firebase_user_id: String,
-    pub phone_number: Option<String>,
-    pub home_region: Option<String>,
     pub user_role: Option<UserRole>,
+}
+
+/// Guard for premium users only
+#[derive(Debug, Clone)]
+pub struct GuardPremium {
+    pub user_id: String,
+    pub firebase_user_id: String,
+    pub user_role: Option<UserRole>,
+}
+
+/// Guard for email-verified users only (excludes Anonymous and Premium)
+#[derive(Debug, Clone)]
+pub struct GuardEmailVerifiedUser {
+    pub user_id: String,
+    pub firebase_user_id: String,
+    pub user_role: Option<UserRole>,
+}
+
+/// Flexible guard that accepts either EmailVerified or Premium users
+#[derive(Debug, Clone)]
+pub enum GuardEmailVerifiedOrPremium {
+    EmailVerified(GuardEmailVerifiedUser),
+    Premium(GuardPremium),
 }
 
 /// Flexible guard that accepts either authenticated or anonymous users
@@ -570,28 +591,7 @@ impl<'r> FromRequest<'r> for GuardUser {
             }
         };
 
-        // 3. Extract phone number (required for GuardUser - if missing, user needs to register)
-        let phone_number = match request.headers().get_one(X_PHONE_NUMBER) {
-            Some(phone) => phone.to_string(),
-            None => {
-                // No phone number means user needs to register
-                let endpoint_path = request.uri().path().to_string();
-                let action_description = Self::get_action_description(&endpoint_path);
-
-                info!(
-                    "GuardUser: User with firebase_id '{}' attempted to access endpoint '{}' without phone number - registration required",
-                    firebase_user_id,
-                    endpoint_path
-                );
-
-                return Outcome::Error((
-                    Status::UnprocessableEntity, // 422 - registration required (frontend expects this)
-                    ApiError::registration_required(&action_description),
-                ));
-            }
-        };
-
-        // 4. Get AuthenticationService from Rocket state
+        // 3. Get AuthenticationService from Rocket state
         let auth_service = match request.guard::<&State<Arc<AuthenticationService>>>().await {
             Outcome::Success(service) => service.inner().clone(),
             _ => {
@@ -607,10 +607,8 @@ impl<'r> FromRequest<'r> for GuardUser {
             }
         };
 
-        // 5. Authenticate using shared service (with country_code fallback)
-        let auth_user = match
-            auth_service.authenticate_from_headers(&firebase_user_id, &phone_number).await
-        {
+        // 4. Authenticate using shared service (email-based, no phone number required)
+        let auth_user = match auth_service.authenticate_from_firebase_uid(&firebase_user_id).await {
             Ok(user) => {
                 debug!(
                     "GuardUser: Authentication successful - user_id: {}, user_role: {:?}",
@@ -643,25 +641,46 @@ impl<'r> FromRequest<'r> for GuardUser {
             }
         };
 
-        // 6. Check if this is an anonymous user trying to access registered-only endpoint
+        // 5. Check if this is an anonymous user trying to access email-verified-only endpoint
         if auth_user.user_role == Some(UserRole::Anonymous) {
             let endpoint_path = request.uri().path().to_string();
             let action_description = Self::get_action_description(&endpoint_path);
 
             info!(
-                "GuardUser: Anonymous user '{}' attempted to access registered-only endpoint '{}'",
+                "GuardUser: Anonymous user '{}' attempted to access email-verified-only endpoint '{}'",
                 auth_user.user_id,
                 endpoint_path
             );
 
             return Outcome::Error((
-                Status::UnprocessableEntity, // 422 - registration required (frontend expects this)
+                Status::UnprocessableEntity, // 422 - email verification required (frontend expects this)
+                ApiError::registration_required(&action_description),
+            ));
+        }
+
+        // 6. Accept EmailVerified or Premium users
+        if
+            auth_user.user_role != Some(UserRole::EmailVerified) &&
+            auth_user.user_role != Some(UserRole::Premium)
+        {
+            let endpoint_path = request.uri().path().to_string();
+            let action_description = Self::get_action_description(&endpoint_path);
+
+            info!(
+                "GuardUser: User '{}' with role '{:?}' attempted to access email-verified-only endpoint '{}'",
+                auth_user.user_id,
+                auth_user.user_role,
+                endpoint_path
+            );
+
+            return Outcome::Error((
+                Status::UnprocessableEntity, // 422 - email verification required
                 ApiError::registration_required(&action_description),
             ));
         }
 
         info!(
-            "GuardUser: User authenticated - ID '{}', State '{:?}'",
+            "GuardUser: User authenticated - ID '{}', Role '{:?}'",
             auth_user.user_id,
             auth_user.user_role
         );
@@ -669,8 +688,6 @@ impl<'r> FromRequest<'r> for GuardUser {
         Outcome::Success(GuardUser {
             user_id: auth_user.user_id,
             firebase_user_id: auth_user.firebase_user_id,
-            phone_number: Some(auth_user.phone_number.clone()),
-            home_region: None, // home_region not available from auth_user
             user_role: auth_user.user_role,
         })
     }
@@ -729,6 +746,311 @@ impl GuardUser {
     }
 }
 
+// === Premium Guard ===
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for GuardPremium {
+    type Error = ApiError;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        debug!("GuardPremium: Attempting premium user authentication for microservice request");
+
+        // 1. Validate internal API key
+        let _expected_api_key = match validate_internal_api_key(request) {
+            Ok(key) => key,
+            Err(e) => {
+                return Outcome::Error((
+                    Status::from_code(e.status_code()).unwrap_or(Status::InternalServerError),
+                    e,
+                ));
+            }
+        };
+
+        // 2. Extract required headers
+        let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
+            Some(uid) => uid.to_string(),
+            _ => {
+                return Outcome::Error((
+                    Status::BadRequest,
+                    ApiError::BadRequest {
+                        message: "Missing X-Firebase-UID header.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        // 3. Get AuthenticationService from Rocket state
+        let auth_service = match request.guard::<&State<Arc<AuthenticationService>>>().await {
+            Outcome::Success(service) => service.inner().clone(),
+            _ => {
+                error!(
+                    "GuardPremium: AuthenticationService not found in Rocket state - check main.rs wiring"
+                );
+                return Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "Authentication service not configured".to_string(),
+                    },
+                ));
+            }
+        };
+
+        // 4. Authenticate using shared service
+        let auth_user = match auth_service.authenticate_from_firebase_uid(&firebase_user_id).await {
+            Ok(user) => {
+                debug!(
+                    "GuardPremium: Authentication successful - user_id: {}, user_role: {:?}",
+                    user.user_id,
+                    user.user_role
+                );
+                user
+            }
+            Err(ApiError::Unauthorized { .. }) => {
+                // User not found
+                info!("GuardPremium: Unregistered user with firebase_id '{}' attempted to access premium endpoint", firebase_user_id);
+
+                return Outcome::Error((
+                    Status::Forbidden,
+                    ApiError::Unauthorized {
+                        message: "Premium subscription required".to_string(),
+                    },
+                ));
+            }
+            Err(e) => {
+                return Outcome::Error((
+                    Status::from_code(e.status_code()).unwrap_or(Status::InternalServerError),
+                    e,
+                ));
+            }
+        };
+
+        // 5. Check if user has Premium role
+        if auth_user.user_role != Some(UserRole::Premium) {
+            info!(
+                "GuardPremium: Non-premium user '{}' with role '{:?}' attempted to access premium endpoint",
+                auth_user.user_id,
+                auth_user.user_role
+            );
+
+            return Outcome::Error((
+                Status::PaymentRequired, // 402 - Payment Required
+                ApiError::PaymentRequired {
+                    message: "Premium subscription required to access this resource".to_string(),
+                },
+            ));
+        }
+
+        info!(
+            "GuardPremium: Premium user authenticated - ID '{}', Role '{:?}'",
+            auth_user.user_id,
+            auth_user.user_role
+        );
+
+        Outcome::Success(GuardPremium {
+            user_id: auth_user.user_id,
+            firebase_user_id: auth_user.firebase_user_id,
+            user_role: auth_user.user_role,
+        })
+    }
+}
+
+impl GuardPremium {
+    /// Convert to GuardUser for backward compatibility
+    pub fn to_guard_user(&self) -> GuardUser {
+        GuardUser {
+            user_id: self.user_id.clone(),
+            firebase_user_id: self.firebase_user_id.clone(),
+            user_role: self.user_role.clone(),
+        }
+    }
+}
+
+impl GuardEmailVerifiedUser {
+    /// Convert to GuardUser for backward compatibility
+    pub fn to_guard_user(&self) -> GuardUser {
+        GuardUser {
+            user_id: self.user_id.clone(),
+            firebase_user_id: self.firebase_user_id.clone(),
+            user_role: self.user_role.clone(),
+        }
+    }
+}
+
+impl GuardEmailVerifiedOrPremium {
+    /// Get user_id regardless of variant
+    pub fn user_id(&self) -> &str {
+        match self {
+            GuardEmailVerifiedOrPremium::EmailVerified(guard) => &guard.user_id,
+            GuardEmailVerifiedOrPremium::Premium(guard) => &guard.user_id,
+        }
+    }
+
+    /// Get firebase_user_id regardless of variant
+    pub fn firebase_user_id(&self) -> &str {
+        match self {
+            GuardEmailVerifiedOrPremium::EmailVerified(guard) => &guard.firebase_user_id,
+            GuardEmailVerifiedOrPremium::Premium(guard) => &guard.firebase_user_id,
+        }
+    }
+
+    /// Get user_role regardless of variant
+    pub fn user_role(&self) -> Option<UserRole> {
+        match self {
+            GuardEmailVerifiedOrPremium::EmailVerified(guard) => guard.user_role.clone(),
+            GuardEmailVerifiedOrPremium::Premium(guard) => guard.user_role.clone(),
+        }
+    }
+
+    /// Convert to GuardUser for backward compatibility
+    pub fn to_guard_user(&self) -> GuardUser {
+        match self {
+            GuardEmailVerifiedOrPremium::EmailVerified(guard) => guard.to_guard_user(),
+            GuardEmailVerifiedOrPremium::Premium(guard) => guard.to_guard_user(),
+        }
+    }
+}
+
+// === Email Verified User Guard ===
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for GuardEmailVerifiedUser {
+    type Error = ApiError;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        debug!(
+            "GuardEmailVerifiedUser: Attempting email-verified user authentication for microservice request"
+        );
+
+        // 1. Validate internal API key
+        let _expected_api_key = match validate_internal_api_key(request) {
+            Ok(key) => key,
+            Err(e) => {
+                return Outcome::Error((
+                    Status::from_code(e.status_code()).unwrap_or(Status::InternalServerError),
+                    e,
+                ));
+            }
+        };
+
+        // 2. Extract required headers
+        let firebase_user_id = match request.headers().get_one(X_FIREBASE_UID) {
+            Some(uid) => uid.to_string(),
+            _ => {
+                return Outcome::Error((
+                    Status::BadRequest,
+                    ApiError::BadRequest {
+                        message: "Missing X-Firebase-UID header.".to_string(),
+                    },
+                ));
+            }
+        };
+
+        // 3. Get AuthenticationService from Rocket state
+        let auth_service = match request.guard::<&State<Arc<AuthenticationService>>>().await {
+            Outcome::Success(service) => service.inner().clone(),
+            _ => {
+                error!(
+                    "GuardEmailVerifiedUser: AuthenticationService not found in Rocket state - check main.rs wiring"
+                );
+                return Outcome::Error((
+                    Status::InternalServerError,
+                    ApiError::InternalServerError {
+                        message: "Authentication service not configured".to_string(),
+                    },
+                ));
+            }
+        };
+
+        // 4. Authenticate using shared service
+        let auth_user = match auth_service.authenticate_from_firebase_uid(&firebase_user_id).await {
+            Ok(user) => {
+                debug!(
+                    "GuardEmailVerifiedUser: Authentication successful - user_id: {}, user_role: {:?}",
+                    user.user_id,
+                    user.user_role
+                );
+                user
+            }
+            Err(ApiError::Unauthorized { .. }) => {
+                // User not found
+                info!("GuardEmailVerifiedUser: Unregistered user with firebase_id '{}' attempted to access email-verified endpoint", firebase_user_id);
+
+                return Outcome::Error((
+                    Status::Forbidden,
+                    ApiError::Unauthorized {
+                        message: "Email verification required".to_string(),
+                    },
+                ));
+            }
+            Err(e) => {
+                return Outcome::Error((
+                    Status::from_code(e.status_code()).unwrap_or(Status::InternalServerError),
+                    e,
+                ));
+            }
+        };
+
+        // 5. Check if user has EmailVerified role (reject Premium and Anonymous)
+        if auth_user.user_role != Some(UserRole::EmailVerified) {
+            info!(
+                "GuardEmailVerifiedUser: User '{}' with role '{:?}' attempted to access email-verified-only endpoint",
+                auth_user.user_id,
+                auth_user.user_role
+            );
+
+            let message = if auth_user.user_role == Some(UserRole::Premium) {
+                "This endpoint is for EmailVerified users only. Premium users should use dedicated Premium endpoints.".to_string()
+            } else {
+                "Email verification required to access this resource".to_string()
+            };
+
+            return Outcome::Error((Status::Forbidden, ApiError::Unauthorized { message }));
+        }
+
+        info!(
+            "GuardEmailVerifiedUser: Email-verified user authenticated - ID '{}', Role '{:?}'",
+            auth_user.user_id,
+            auth_user.user_role
+        );
+
+        Outcome::Success(GuardEmailVerifiedUser {
+            user_id: auth_user.user_id,
+            firebase_user_id: auth_user.firebase_user_id,
+            user_role: auth_user.user_role,
+        })
+    }
+}
+
+// === Flexible Email Verified or Premium Guard ===
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for GuardEmailVerifiedOrPremium {
+    type Error = ApiError;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        // Try Premium authentication first
+        if let Outcome::Success(premium) = GuardPremium::from_request(request).await {
+            return Outcome::Success(GuardEmailVerifiedOrPremium::Premium(premium));
+        }
+
+        // Fall back to EmailVerified
+        if
+            let Outcome::Success(email_verified) =
+                GuardEmailVerifiedUser::from_request(request).await
+        {
+            return Outcome::Success(GuardEmailVerifiedOrPremium::EmailVerified(email_verified));
+        }
+
+        // Both failed
+        Outcome::Error((
+            Status::Forbidden,
+            ApiError::Unauthorized {
+                message: "Email verification or Premium subscription required".to_string(),
+            },
+        ))
+    }
+}
+
 // === Anonymous Guard ===
 
 #[rocket::async_trait]
@@ -775,9 +1097,9 @@ impl<'r> FromRequest<'r> for GuardAnonymous {
 
         debug!("GuardAnonymous: Anonymous authentication - firebase_id '{}'", firebase_user_id);
 
-        // 4. Call user service for authentication using GLOBAL (anonymous users always stored with GLOBAL)
+        // 4. Call user service for authentication (no country_code needed)
         let auth_url = format!(
-            "{}/users/exists?firebase_user_id={}&country_code=GLOBAL",
+            "{}/users/exists?firebase_user_id={}",
             user_service_url,
             urlencoding::encode(&firebase_user_id)
         );
@@ -935,9 +1257,9 @@ impl<'r> FromRequest<'r> for GuardPreRegistration {
             }
         };
 
-        // 4. Call user service for authentication data using GLOBAL
+        // 4. Call user service for authentication data (no country_code needed)
         let auth_url = format!(
-            "{}/users/exists?firebase_user_id={}&country_code=GLOBAL",
+            "{}/users/exists?firebase_user_id={}",
             user_service_url,
             urlencoding::encode(&firebase_user_id)
         );
@@ -998,6 +1320,84 @@ impl<'a> OpenApiFromRequest<'a> for GuardUser {
         Ok(
             RequestHeaderInput::Security(
                 "InternalMicroserviceHeaders".to_owned(),
+                internal_api_key_scheme,
+                security_req
+            )
+        )
+    }
+}
+
+// OpenAPI configuration for GuardPremium
+impl<'a> OpenApiFromRequest<'a> for GuardPremium {
+    fn from_request_input(
+        _gen: &mut OpenApiGenerator,
+        _name: String,
+        _required: bool
+    ) -> rocket_okapi::Result<RequestHeaderInput> {
+        let internal_api_key_scheme = create_internal_api_key_scheme();
+        let _firebase_uid_scheme = create_firebase_uid_scheme(
+            "Firebase User ID (UID) of the premium user, propagated by the API Gateway."
+        );
+
+        let mut security_req = SecurityRequirement::new();
+        security_req.insert("InternalApiKeyAuth".to_owned(), Vec::new());
+        security_req.insert("FirebaseUidAuth".to_owned(), Vec::new());
+
+        Ok(
+            RequestHeaderInput::Security(
+                "PremiumMicroserviceHeaders".to_owned(),
+                internal_api_key_scheme,
+                security_req
+            )
+        )
+    }
+}
+
+// OpenAPI configuration for GuardEmailVerifiedUser
+impl<'a> OpenApiFromRequest<'a> for GuardEmailVerifiedUser {
+    fn from_request_input(
+        _gen: &mut OpenApiGenerator,
+        _name: String,
+        _required: bool
+    ) -> rocket_okapi::Result<RequestHeaderInput> {
+        let internal_api_key_scheme = create_internal_api_key_scheme();
+        let _firebase_uid_scheme = create_firebase_uid_scheme(
+            "Firebase User ID (UID) of the email-verified user, propagated by the API Gateway."
+        );
+
+        let mut security_req = SecurityRequirement::new();
+        security_req.insert("InternalApiKeyAuth".to_owned(), Vec::new());
+        security_req.insert("FirebaseUidAuth".to_owned(), Vec::new());
+
+        Ok(
+            RequestHeaderInput::Security(
+                "EmailVerifiedMicroserviceHeaders".to_owned(),
+                internal_api_key_scheme,
+                security_req
+            )
+        )
+    }
+}
+
+// OpenAPI configuration for GuardEmailVerifiedOrPremium
+impl<'a> OpenApiFromRequest<'a> for GuardEmailVerifiedOrPremium {
+    fn from_request_input(
+        _gen: &mut OpenApiGenerator,
+        _name: String,
+        _required: bool
+    ) -> rocket_okapi::Result<RequestHeaderInput> {
+        let internal_api_key_scheme = create_internal_api_key_scheme();
+        let _firebase_uid_scheme = create_firebase_uid_scheme(
+            "Firebase User ID (UID) - accepts both EmailVerified and Premium users."
+        );
+
+        let mut security_req = SecurityRequirement::new();
+        security_req.insert("InternalApiKeyAuth".to_owned(), Vec::new());
+        security_req.insert("FirebaseUidAuth".to_owned(), Vec::new());
+
+        Ok(
+            RequestHeaderInput::Security(
+                "EmailVerifiedOrPremiumHeaders".to_owned(),
                 internal_api_key_scheme,
                 security_req
             )
